@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security Vulnerability
+    url: https://github.com/janoliver2314-a11y/-AI-EOS/security/advisories/new
+    about: Please report security vulnerabilities privately rather than as a public issue. See docs/volumes/07-security.md.
