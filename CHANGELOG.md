@@ -9,6 +9,13 @@ once a first tagged release exists. Until then, changes are tracked under
 
 ## [Unreleased]
 
+### Changed
+
+- `CLAUDE.md` §15 (Learning System): added an explicit rule requiring
+  `memory/` to be consulted before implementing a feature or fixing a bug,
+  and updated as part of the same change when new knowledge is gained —
+  generalizing the prior lessons/patterns-only guidance to all of `memory/`.
+
 ### Added
 
 - Initial repository bootstrap: directory structure, `CLAUDE.md` operating

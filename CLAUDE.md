@@ -195,6 +195,8 @@ An ADR records: **Context**, **Decision**, **Alternatives Considered**, **Conseq
 
 ## 15. Learning System
 
+Before implementing a feature or fixing a bug, consult the relevant files in `memory/` for prior decisions, lessons learned, and known pitfalls. When new knowledge is gained, update the appropriate memory document as part of the same change.
+
 Whenever a bug is fixed, before closing the task, append an entry to `memory/lessons-learned.md` recording:
 
 - **Root Cause** — the actual underlying cause, not the symptom.
