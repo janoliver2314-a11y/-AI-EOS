@@ -106,6 +106,39 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   mismatches in shared prefix directories (`/usr/local/share`,
   `/usr/local/etc`, `/usr/local/var`) on reinstall.
 
+### LL-0005 — Low-code workflow nodes' "simplified" output field names/casing must be verified from real execution data, not assumed
+
+- **Root Cause**: An n8n workflow (LNC dashboard's auto-log workflow) read
+  `msg["to"]` / `msg["from"]` (lowercase) to extract recipient/sender, but
+  the Gmail Trigger node's simplified output actually keys these fields as
+  `"To"` / `"From"` (capitalized). Every extraction silently returned an
+  empty string, so none of the workflow's Sheet-writing branches (Sent/FU1/
+  FU2/Replied) ever matched a row. The workflow could never have auto-logged
+  a real send or reply since the day it was built.
+- **Why It Happened**: The field names/casing were assumed rather than
+  checked against actual execution output, and nothing forced a check —
+  existing tracker rows were already populated by a one-off manual backfill,
+  not by this trigger path, so the workflow's total non-functionality
+  produced no visible symptom. It was only caught by deliberately inspecting
+  execution data during unrelated testing (a manual test send that got
+  labeled but never appeared in the tracker).
+- **Solution**: Corrected all 4 label branches to read `"To"` / `"From"`
+  matching the trigger node's actual output, verified against real execution
+  data rather than documentation or adjacent code.
+- **Preventive Rule**: When building or modifying a low-code workflow
+  (n8n, Zapier, Make, etc.) against a node's "simplified"/flattened output,
+  verify the actual field names and casing from real execution data (via the
+  platform's execution history/API, or by running the node once and
+  inspecting output) before writing matching/extraction logic against them.
+  Do not assume field names from documentation, memory, or adjacent code
+  that was itself never validated against a live run.
+- **Similar Situations**: Any workflow-builder node advertised as
+  "simplified output" (Gmail, Slack, Notion, Airtable triggers/actions in
+  n8n/Zapier/Make) — these simplification layers are undocumented or
+  under-documented and can differ from the underlying API's field casing.
+  Also applies to any integration code copied from one node/branch to
+  another without re-verifying the new node's actual output shape.
+
 <!--
 Template for new entries — copy this block:
 
