@@ -139,6 +139,59 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   Also applies to any integration code copied from one node/branch to
   another without re-verifying the new node's actual output shape.
 
+### LL-0006 — n8n Code node execution mode and HTTP node concurrency are not what they look like
+
+- **Root Cause**: Two related, silent low-code execution-model bugs, found
+  while building an n8n workflow that discovers records via an external API
+  and writes new rows into a Google Sheet:
+  1. A Code node with no explicit `mode` set defaults to "Run Once for All
+     Items," not "once per item." Code written assuming
+     `$input.first().json` refers to "the current item" (per-item
+     semantics) instead silently only ever processes the *first* item of
+     the whole batch on every logical iteration, discarding the rest with
+     no error — the node still reports success.
+  2. An HTTP Request node given multiple input items fires them **in
+     parallel by default**, not sequentially. When those parallel calls
+     each read-then-write a shared resource (here: "find the next blank
+     row, then write it"), they race: all read the same stale state, and
+     only the last writer's data survives. This produced actual data loss
+     — 13 of 14 genuinely discovered records were silently overwritten in
+     one run, with the workflow still reporting success. The node's
+     "batching" option (`batchSize: 1`) was tried as a fix and did **not**
+     resolve the race in practice — confirmed empirically, not assumed.
+- **Why It Happened**: Both defaults are internally consistent with how
+  the platform is documented, but contradict the mental model a developer
+  coming from ordinary sequential/per-item scripting brings by default.
+  Nothing about the node's configuration UI or a quick glance at the code
+  makes the batch-vs-per-item distinction, or the parallel dispatch,
+  obvious — it only surfaces by inspecting real execution data
+  (item counts per node run) after a live test.
+- **Solution**: For per-item logic, set the Code node's mode explicitly to
+  "Run Once for Each Item" and use `$json`/`$input.item.json` (not
+  `$input.first()`) to reference the current item. For a group of writes
+  that must land in contiguous/shared state (e.g., appending N new rows),
+  eliminate the race structurally instead of trying to force serial
+  HTTP dispatch: compute every write's target position once, up front,
+  from a single read, then issue **one atomic batch write** covering all
+  of them, rather than N separate calls that each independently resolve
+  "the next" position.
+- **Preventive Rule**: Before trusting any low-code (n8n/Zapier/Make)
+  multi-item logic, verify empirically via the platform's execution
+  history/API — check how many times each node actually ran and how many
+  items it actually saw — rather than assuming batch-vs-per-item mode or
+  request concurrency from the node's visual layout. Never let N
+  concurrently-dispatched steps each independently read-then-write a
+  shared/contiguous resource (a "next available slot," a running counter,
+  a next-row scan); collapse them into one atomic operation instead.
+- **Similar Situations**: Any n8n/Zapier/Make workflow with a Code/Function
+  step processing a fan-out of items (search results, API pagination,
+  webhook batch payloads) — verify the node's actual per-run item count
+  before trusting `.first()`/`.item()`-style item access. Any workflow step
+  that calls another webhook/workflow N times to each "find and claim" a
+  slot in a shared spreadsheet, queue position, or counter — this is a
+  race by default in any platform that parallelizes multi-item HTTP calls,
+  not specific to n8n or Google Sheets.
+
 <!--
 Template for new entries — copy this block:
 
