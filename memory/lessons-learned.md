@@ -192,6 +192,40 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   race by default in any platform that parallelizes multi-item HTTP calls,
   not specific to n8n or Google Sheets.
 
+### LL-0007 — Project bootstrap template shipped a tracked runtime-telemetry file, committed into every new project
+
+- **Root Cause**: `Workspace/Bootstrap/template/` (the source `create-project.sh`
+  copies into every new `Projects/<name>/`) included a pre-existing
+  `.claude-flow/data/pending-insights.jsonl` file with no matching
+  `.gitignore` entry. The template's own `.gitignore` covered `node_modules/`,
+  build output, `.env`, and `.DS_Store`, but not tooling-runtime state.
+  `create-project.sh`'s initial `git add -A && git commit` therefore committed
+  this file into every bootstrapped project from its very first commit, and a
+  later broad `git add -A` in one such project (NCLEX AI Platform) nearly
+  staged further session-noise appended to it before being caught by
+  inspecting `git diff --cached` prior to committing.
+- **Why It Happened**: The template's `.gitignore` was written for
+  general-purpose build/dependency artifacts and never audited against what
+  the local Ruflo/claude-flow tooling itself writes into a project directory
+  at runtime. A tool-local data directory looks like ordinary project content
+  to `git add -A` unless explicitly excluded.
+- **Solution**: Added `.claude-flow/` to `Workspace/Bootstrap/template/.gitignore`
+  (fixes every future bootstrap) and to the already-bootstrapped NCLEX AI
+  Platform project's `.gitignore`, with `git rm --cached` to untrack the file
+  that had already been committed there.
+- **Preventive Rule**: Before trusting a broad `git add -A` (especially a
+  project's first commit, or any bootstrap/scaffold script that automates
+  one), run `git status`/`git diff --cached` and check every staged path
+  against what local tooling writes at runtime (`.claude-flow/`, similar
+  agent/framework state dirs) — don't assume a scaffold template's
+  `.gitignore` already accounts for tool-local state just because it covers
+  common build artifacts.
+- **Similar Situations**: Any new project bootstrapped before this fix landed
+  (check `git ls-files | grep claude-flow` in each); any future addition of a
+  new local tool/agent framework that writes its own state directory into
+  project roots — audit `Workspace/Bootstrap/template/.gitignore` when that
+  happens rather than waiting to catch it per-project.
+
 <!--
 Template for new entries — copy this block:
 
