@@ -226,6 +226,36 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   project roots — audit `Workspace/Bootstrap/template/.gitignore` when that
   happens rather than waiting to catch it per-project.
 
+### LL-0008 — TDD RED runs execute the unguarded code path; denial tests aimed at real data mutated the live dev DB
+
+- **Root Cause**: An implementation plan's access-control denial tests (expect
+  403 on every route) used a REAL seeded row id in their requests. During the
+  TDD RED step — run deliberately before the gate exists — the requests hit
+  the ungated handlers, which executed fully: a published question in the live
+  local database got its content overwritten and its workflow stage moved.
+  Nothing failed loudly; the damage surfaced only later, during browser
+  verification, as a mysteriously un-published, mangled row in the review
+  queue.
+- **Why It Happened**: The plan author reasoned "the gate fires before handler
+  logic, so the id doesn't need to exist" — true only AFTER the gate exists.
+  The RED half of the TDD cycle runs the same requests against the pre-gate
+  code, where they are ordinary, fully-privileged mutations. Integration tests
+  against a live dev DB made those mutations real.
+- **Solution**: Restored the DB from seed (`supabase db reset`), re-ran the
+  full suite against the clean DB to prove the now-gated tests touch nothing,
+  and changed the denial tests to a nonexistent id so even ungated handlers
+  cap the blast radius at a 404 (NCLEX AI Platform commit c0a21c2).
+- **Preventive Rule**: Negative/denial tests (401/403/404 assertions) must
+  never aim mutating requests at real data ids — use ids that cannot resolve.
+  When writing a plan's RED step, ask "what do these requests do against the
+  CURRENT code, where the feature doesn't exist yet?", not just against the
+  finished code.
+- **Similar Situations**: Any auth/authz feature TDD'd with integration tests
+  against a live datastore; rate-limit or validation tests whose requests
+  would succeed destructively if the limiter/validator isn't wired yet; any
+  test suite that borrows "convenient" seed rows as request targets for
+  requests that are supposed to be rejected.
+
 <!--
 Template for new entries — copy this block:
 
