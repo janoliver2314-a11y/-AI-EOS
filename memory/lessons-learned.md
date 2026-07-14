@@ -256,6 +256,49 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   test suite that borrows "convenient" seed rows as request targets for
   requests that are supposed to be rejected.
 
+### LL-0009 — A degraded Docker Desktop needs a restart AND ancillary-service exclusion; `supabase start` fails the whole stack on one unhealthy container
+
+- **Root Cause**: A `supabase db reset` aborted mid-run on a transient
+  container health-check blip, leaving the local DB empty. Retrying while
+  Docker Desktop was already resource-degraded made it worse: `supabase
+  stop`/`start` began timing out and `docker exec` threw `setns` errors. Even
+  a full Docker Desktop restart (`pkill -9` the `com.docker.*` + `Docker
+  Desktop.app` processes, then `open -a Docker`) did not restore a working
+  stack, because `supabase start` tears the ENTIRE stack down if ANY single
+  container is unhealthy — and the ancillary `postgres-meta` and `studio`
+  containers reliably fail their health checks on a cold Docker boot, taking
+  the healthy `db`/`rest`/`kong` down with them.
+- **Why It Happened**: Two compounding wrong assumptions. (1) "Just re-run the
+  reset" (a prior, milder lesson) — insufficient once Docker itself is
+  degrading, not just flapping once. (2) `supabase start` is all-or-nothing on
+  health: a slow-to-warm optional service (studio/pg_meta) is treated
+  identically to a broken essential one, so the services you don't even need
+  for the task can block the ones you do. After a hard `pkill`, Docker
+  Desktop's VM can also take 10+ minutes (and sometimes a GUI-level restart)
+  to become ready — the daemon socket accepts connections but `docker version`
+  hangs until the Linux VM finishes booting, which reads as "still wedged."
+- **Solution**: Restart Docker Desktop, wait (patiently, or restart it again
+  from the menu bar) until `docker version` returns a server version, then
+  start Supabase with the non-essential services excluded:
+  `supabase start -x studio,postgres-meta,imgproxy,edge-runtime,logflare,vector,supavisor`
+  (valid exclude names: edge-runtime, gotrue, imgproxy, kong, logflare,
+  mailpit, postgres-meta, postgrest, realtime, storage-api, studio, supavisor,
+  vector). That brings up just db+rest+kong — everything a
+  reset/verify/review path needs — after which `supabase db reset` runs
+  cleanly and the seed applies.
+- **Preventive Rule**: For local-Supabase-on-Docker verification, don't fight
+  a degraded stack service-by-service: restart Docker Desktop, then start
+  Supabase with `-x` excluding the ancillary services and only run `db reset`
+  against the minimal db+rest+kong set. Treat a hung `docker version` after a
+  hard kill as "VM still booting," not "still broken" — give it minutes, or
+  restart Docker Desktop from the GUI.
+- **Similar Situations**: Any local dev stack whose orchestrator gates startup
+  on all-container health (Supabase CLI, some docker-compose healthcheck
+  setups) — exclude/omit the services the task doesn't need rather than
+  waiting on their flaky health checks; any workflow that hard-kills Docker
+  Desktop and then races its VM boot. Reinforces the NCLEX AI Platform
+  Docker-wedge notes.
+
 <!--
 Template for new entries — copy this block:
 
