@@ -299,6 +299,42 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   Desktop and then races its VM boot. Reinforces the NCLEX AI Platform
   Docker-wedge notes.
 
+### LL-0010 — A once-only / idempotency guard must be reset on the failure path, or a transient error becomes a permanent dead-end
+
+- **Root Cause**: A React "finish the exam" action (`endExam`) set a
+  `endingRef` guard `true` on entry to prevent a double-fire (two call sites
+  — last-answer submit and the countdown's expiry — could race), but the
+  `catch` block never reset it. When the finishing network calls
+  (`completeSession` + `getSession`) failed transiently, the guard stayed
+  `true`, so every later retry path (the timer's next tick, a re-submit)
+  silently no-opped. Compounding it, the error banner was rendered only in
+  the setup phase, so the failure was invisible while the learner sat on the
+  last question — a permanent in-page dead-end from a recoverable error
+  (server state was intact; UX only).
+- **Why It Happened**: The guard was added to fix a concurrency bug (double
+  submit) and reasoned about only the success path ("set true, then move to
+  the summary"). The failure path — where the guard must be released so the
+  operation can be attempted again — wasn't considered. Separately, error
+  *state* was set (`setError`) but the error was only *rendered* in a
+  different UI phase than the one the failing action runs in.
+- **Solution**: Reset the guard in the `catch` (`endingRef.current = false`),
+  clear stale error state at entry so a successful retry doesn't flash the
+  old message, and render the error + an explicit retry control in the phase
+  where the failing action lives — not only where the flow started (NCLEX AI
+  Platform commit 3dac629).
+- **Preventive Rule**: Any guard/latch/flag that gates an async action
+  (idempotency keys, `isSubmitting`, once-only `firedRef`/`endingRef`,
+  distributed locks) must be released on EVERY exit path, including the error
+  path — otherwise a transient failure converts into a permanent stuck state.
+  And surface an action's error (with a retry affordance) in the same UI
+  context where the user triggered it; setting error state that only renders
+  elsewhere is equivalent to swallowing it.
+- **Similar Situations**: Optimistic-UI mutations with a "sending" latch; any
+  "submit once" button ref; server-side idempotency-key handlers that mark a
+  key consumed before the operation succeeds; a lock/semaphore acquired in a
+  `try` without release in `finally`/`catch`; a state machine whose terminal
+  transition has no path back out when the terminal action itself fails.
+
 <!--
 Template for new entries — copy this block:
 
