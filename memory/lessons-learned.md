@@ -366,6 +366,48 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   hitting a leftover server from a previous job on a shared runner; hot
   reload silently dead so edits never reach the running process.
 
+### LL-0012 — A Clerk *development* instance on a deployed (non-localhost) domain 404s to non-browser clients; don't diagnose the deployed frontend with curl
+
+- **Root Cause**: During production-deploy smoke tests, `curl` and
+  non-JS fetches of a live Next.js + Clerk frontend returned `404` on every
+  route (`/`, `/practice`), while a real browser loaded the app and
+  redirected cleanly to Clerk sign-in. The deployment was using a Clerk
+  **development** instance (`pk_test_`/`sk_test_` on the shared
+  `*.clerk.accounts.dev` domain), chosen because a true production instance
+  (`pk_live_`) needs a custom domain + DNS the app didn't have yet.
+- **Why It Happened**: Clerk dev instances authenticate via a "dev browser"
+  handshake (a `__clerk_db_jwt` established through a redirect that only a
+  real, JS-executing browser completes). `clerkMiddleware` calling
+  `auth.protect()` on a signed-out request with no dev-browser token fails
+  closed by *rewriting to `/404`* rather than redirecting — the response
+  headers say exactly this: `x-clerk-auth-reason: protect-rewrite,
+  dev-browser-missing`, `x-clerk-auth-status: signed-out`,
+  `x-matched-path: /404`. curl can't do the handshake, so it always sees the
+  404; the browser can, so it works. The 404 looked like a broken
+  deploy/routing bug but was expected auth behavior.
+- **Solution**: Verify a deployed Clerk-protected frontend **in a real
+  browser**, not with curl. To confirm it's protection (not a real 404),
+  read the response headers for `x-clerk-auth-reason` / `x-matched-path:
+  /404`, or fetch through a JS-capable client. (NCLEX AI Platform, first
+  production deploy, 2026-07-15 — a browser hit showed the Clerk hosted
+  sign-in, labeled "Development mode", confirming the dev instance.)
+- **Preventive Rule**: When a deployed, auth-gated page returns an
+  unexpected status to `curl`/`wget`/`fetch`, check the auth middleware's
+  response headers before treating it as a routing/deploy bug — an auth
+  layer that rewrites-to-404 for unauthenticated (or handshake-incomplete)
+  requests is indistinguishable from a real 404 by status code alone.
+  Reserve command-line HTTP for endpoints that are genuinely public
+  (health checks, JSON APIs that return their own 401); use a browser for
+  anything a client-side auth SDK gates. And know that a Clerk **dev**
+  instance is a stopgap on a deployed domain — plan the `pk_live_` +
+  custom-domain swap for real launch.
+- **Similar Situations**: Any auth middleware that rewrites unauthenticated
+  requests to a 404/200 shell instead of a 401/302 (Clerk, some NextAuth
+  setups); Vercel/Netlify deployment-protection walls returning 401/302 on
+  preview URLs; a CDN/WAF serving a challenge page that scripted clients
+  can't solve; SSR pages that render an empty shell to bots lacking a
+  cookie the client JS would set.
+
 <!--
 Template for new entries — copy this block:
 
