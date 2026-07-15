@@ -408,6 +408,50 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   can't solve; SSR pages that render an empty shell to bots lacking a
   cookie the client JS would set.
 
+### LL-0013 — `supabase status` omits the anon/service_role keys when `[auth] enabled = false`; CI must supply the local demo keys directly
+
+- **Root Cause**: Wiring GitHub Actions CI for a FastAPI + Supabase app whose
+  DB-integration tests hit PostgREST, the workflow tried to read the local
+  stack's keys from `supabase status` to feed the test client. Every
+  extraction returned nothing usable: `supabase status -o json | jq -r
+  '.SERVICE_ROLE_KEY'` yielded `null` → the Supabase client raised
+  `Invalid API key`; switching to `supabase status -o env --override-name
+  auth.service_role_key=...` produced *empty* vars → `supabase_key is
+  required`. Two red CI runs before the cause was found.
+- **Why It Happened**: The project uses Clerk for auth, so
+  `supabase/config.toml` sets `[auth] enabled = false`. With the auth
+  (GoTrue) service disabled, `supabase status` **does not emit `ANON_KEY` /
+  `SERVICE_ROLE_KEY` at all** — the JSON/env output only carries `API_URL`,
+  `DB_URL`, `REST_URL`, etc. So both extraction attempts were reading fields
+  that didn't exist. The keys themselves are still valid and required:
+  PostgREST is running and verifies JWTs signed with the stack's JWT secret,
+  independent of whether GoTrue runs.
+- **Solution**: Set the keys **directly** in the workflow instead of
+  extracting them. The local stack's anon/service_role keys are the
+  well-known Supabase **demo** JWTs and are *deterministic* as long as
+  `config.toml` does not override the JWT secret — so they can be committed
+  as job `env` (`SUPABASE_URL: http://127.0.0.1:54321` plus the standard
+  demo anon/service_role JWTs). They're safe to commit: they only
+  authenticate against a throwaway local stack, never production. Confirmed
+  the exact keys by starting the stack locally and curling PostgREST, and
+  ran the full suite locally (136 passed) before pushing the fix. (NCLEX AI
+  Platform, CI wiring, 2026-07-15.)
+- **Preventive Rule**: Before scripting extraction of values from a tool's
+  status/introspection output, confirm the fields actually exist under your
+  config — a disabled service silently drops its fields rather than erroring.
+  For local Supabase specifically: when auth is disabled, don't parse
+  `supabase status` for keys; set the deterministic public demo keys (or a
+  pinned JWT secret + derived keys) directly. And verify infra-dependent CI
+  locally (bring the stack up, run the suite) before burning CI runs — two
+  red runs guessing at CLI output is the tell you skipped this.
+- **Similar Situations**: Any `status`/`describe`/`info` command whose output
+  shape depends on which optional services/features are enabled (disabled
+  module → missing field, not an error); parsing `kubectl`/`docker`/`gh`
+  JSON for keys that only appear under certain configs; assuming an
+  introspection endpoint always returns a field that is actually
+  feature-gated; extracting secrets from tooling when the value is in fact a
+  fixed, publishable default.
+
 <!--
 Template for new entries — copy this block:
 
