@@ -335,6 +335,37 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   `try` without release in `finally`/`catch`; a state machine whose terminal
   transition has no path back out when the terminal action itself fails.
 
+### LL-0011 — A port that answers is not your build: a stale dev server silently masked a new feature during verification
+
+- **Root Cause**: During browser verification of a just-built API feature, a
+  dev server from a *previous* session (started hours earlier, running
+  pre-feature code) was still bound to the target port. The freshly launched
+  server hit `EADDRINUSE` and exited — but its log printed "Application
+  startup complete" *before* the bind error, and the port's health endpoint
+  returned 200 (from the stale process). Verification proceeded against the
+  old build: the new response field was silently absent and the UI rendered
+  `NaN` where arithmetic used it.
+- **Why It Happened**: "The port responds" was treated as "my server is
+  running." Backgrounded dev servers outlive the session that started them;
+  uvicorn's startup banner precedes the bind failure, so a quick log glance
+  looks healthy; and a missing JSON field degrades silently in JS
+  (`total - undefined === NaN`) instead of failing loudly.
+- **Solution**: `lsof -nP -iTCP:8000 -sTCP:LISTEN` exposed the stale PID
+  (start time hours before the feature existed); kill it, relaunch, confirm
+  the log shows a successful bind, re-verify — field present, UI correct
+  (NCLEX AI Platform, adaptive-selection verification, 2026-07-15).
+- **Preventive Rule**: Before browser/e2e verification, prove the process
+  answering the port is the build you just wrote: (1) read the new server's
+  log far enough to confirm the *bind* succeeded (no `EADDRINUSE`), or
+  (2) `lsof` the port and match the PID against the process just launched,
+  or (3) hit an endpoint/field marker only the new build serves. A 200 from
+  the port is evidence that *a* server is running, not that *yours* is.
+- **Similar Situations**: A forgotten `next dev` serving yesterday's bundles
+  on :3000; a Docker container publishing the same port as a local process;
+  two checkouts of the same repo each starting "the" backend; CI e2e jobs
+  hitting a leftover server from a previous job on a shared runner; hot
+  reload silently dead so edits never reach the running process.
+
 <!--
 Template for new entries — copy this block:
 
