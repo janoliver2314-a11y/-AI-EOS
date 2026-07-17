@@ -452,6 +452,50 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   feature-gated; extracting secrets from tooling when the value is in fact a
   fixed, publishable default.
 
+
+
+### LL-0014 — Background subagents park "waiting for a notification" that can never reach them; instruct foreground gates up front and nudge stalled agents to completion
+
+- **Root Cause**: A subagent running as a background task has no notification
+  channel of its own. When it launches long work (a ~5-min test suite, a
+  build) as a *background* job inside its own session and then ends its turn
+  "to wait for the completion notification," it stops permanently: the
+  harness marks the agent completed at its last message, and the inner job's
+  completion notice goes nowhere. The agent isn't crashed or slow — it has
+  cleanly exited while believing it is waiting.
+- **Why It Happened**: The wait-for-notification pattern is correct for the
+  top-level controller session (which does get task notifications), and
+  agents pattern-match to it. Long-running gates make backgrounding feel
+  responsible. It happened four times in one session (Ember UI Phase-1
+  build, NCLEX AI Platform, 2026-07-16/17) across different subagents —
+  implementers on test runs and a fixer on a vitest run — even after the
+  dispatch prompt warned against it once.
+- **Solution**: Two-part controller protocol. (1) Every dispatch prompt for
+  work involving long commands states explicitly: "Run gates in the
+  FOREGROUND and wait (~N min is expected); never park waiting on background
+  notifications — none will ever reach you; drive to completion or reply
+  BLOCKED." (2) When a completion notification arrives whose result text
+  says the agent is "waiting" for anything, treat it as a stall, not a
+  result: immediately SendMessage the same agent — "no notification is
+  coming; check the job's output directly or re-run in the foreground, then
+  finish every remaining step without stopping." Resuming via SendMessage
+  preserves the agent's context; re-dispatching fresh loses it and re-pays
+  the setup cost.
+- **Preventive Rule**: A subagent's reply that ends in "waiting for X" is a
+  stalled agent, not a status update — nudge it the moment you see it.
+  Put the foreground-gates instruction in every dispatch that will run
+  anything slower than ~1 minute, and repeat it verbatim in nudges; one
+  mention at dispatch time demonstrably does not stick across a long agent
+  session.
+- **Similar Situations**: Any orchestrator/worker design where only the
+  parent holds the event channel (CI orchestrators spawning jobs that poll
+  APIs the child can't see); agents ending turns on "I'll wait for the
+  webhook/callback"; humans in async workflows waiting on notifications that
+  were routed to a different inbox; session-limit kills mid-agent (the
+  sibling failure this session) — in both cases the recovery is the same:
+  resume the same agent from its transcript with explicit "pick up from
+  here, finish in one pass" instructions rather than starting over.
+
 <!--
 Template for new entries — copy this block:
 
