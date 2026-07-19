@@ -496,6 +496,45 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   resume the same agent from its transcript with explicit "pick up from
   here, finish in one pass" instructions rather than starting over.
 
+### LL-0015 — Google OAuth refresh tokens expire after 7 days while the consent screen is in "Testing" — reconnecting is a stopgap, publishing the app is the fix
+
+- **Root Cause**: A self-hosted n8n instance authenticated to Google (Gmail,
+  Sheets, Drive) via OAuth. The Google Cloud OAuth consent screen was left in
+  **"Testing"** publishing status. Google unconditionally expires OAuth
+  **refresh** tokens after 7 days for apps in Testing — so every credential
+  sharing that OAuth app dies together roughly weekly, regardless of usage.
+- **Why It Happened**: The OAuth app was set up just far enough to work
+  ("Testing" is the default state after creating credentials) and never
+  published, because it worked immediately and the 7-day timer is invisible
+  until the tokens actually expire. The failure then presents as an
+  *application* bug, not a credential one: the downstream consumer (a
+  dashboard) showed `Object.entries requires that input parameter not be null
+  or undefined` because the n8n webhook returned an empty (0-byte) 200 body
+  when its upstream Google HTTP node failed — the real error
+  (`Access could not be refreshed because the connected account has revoked
+  access, the refresh token expired, or the account password or permissions
+  changed`) was only visible in the container logs / execution data, not to
+  the caller.
+- **Solution**: Two layers. (1) *Immediate*: reconnect each affected Google
+  credential in the n8n Credentials UI (manual OAuth sign-in). (2) *Durable*:
+  Google Cloud Console → APIs & Services → OAuth consent screen → **Publish
+  app** (Testing → In production). For a single-user internal app the
+  "unverified app" warning is safe to ignore; publishing removes the 7-day
+  refresh-token expiry entirely.
+- **Preventive Rule**: When wiring any long-lived automation to Google OAuth,
+  **publish the consent screen as part of setup** — never leave it in
+  "Testing" for anything meant to run unattended. And when a downstream
+  consumer of a webhook/automation returns empty-but-200, look at the
+  automation's own execution logs for the real (often auth) error rather than
+  debugging the consumer — an empty success body is a classic swallowed
+  upstream failure.
+- **Similar Situations**: Any unattended integration on Google OAuth (n8n,
+  Zapier self-hosted, Make, custom scripts, cron jobs) in Testing status;
+  more broadly, any OAuth provider with a "development/test" mode that caps
+  token lifetime. Also any pipeline where a middle tier returns a 200 with
+  no/empty body on upstream failure — treat empty-success as a failure
+  signal, not a data-absent signal.
+
 <!--
 Template for new entries — copy this block:
 
