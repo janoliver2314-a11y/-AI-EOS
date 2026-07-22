@@ -470,6 +470,27 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   build, NCLEX AI Platform, 2026-07-16/17) across different subagents —
   implementers on test runs and a fixer on a vitest run — even after the
   dispatch prompt warned against it once.
+- **Recurrence (2026-07-22, same project, Ember Phase 3a subagent-driven-development
+  branch)**: Happened again on a `PracticeView.tsx` retheme task, this time
+  with a twist: the controller's own dispatch prompt for that task never
+  included the foreground-gates instruction at all (despite this lesson
+  already existing in memory) — proving the rule isn't self-enforcing; it
+  has to be re-copied into every dispatch, every session, because a prior
+  session's memory does not automatically shape a fresh dispatch prompt's
+  wording unless the controller actively re-reads and reapplies it. The
+  agent went idle ~4+ hours (previous occurrences were minutes). The first
+  SendMessage nudge ("check if vitest finished, then report") *also*
+  triggered the same stall one level down — the agent replied that it had
+  its own `Monitor` watching the background process and would "report back
+  when that completes," i.e. the nudge itself re-armed the wait-for-a-
+  notification trap because it didn't forbid backgrounding. Only a second,
+  blunter nudge ("stand down, do not commit, do not run anything further,
+  the controller is taking over") actually stopped it. The controller broke
+  the loop by verifying the diff directly in the shared worktree (`git
+  diff`/`git status` — subagents and the controller share the same working
+  tree, so an implementer's uncommitted edits are inspectable without
+  needing the agent at all), running tsc/eslint/vitest itself in the
+  foreground, and committing on the agent's behalf.
 - **Solution**: Two-part controller protocol. (1) Every dispatch prompt for
   work involving long commands states explicitly: "Run gates in the
   FOREGROUND and wait (~N min is expected); never park waiting on background
@@ -480,13 +501,26 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   coming; check the job's output directly or re-run in the foreground, then
   finish every remaining step without stopping." Resuming via SendMessage
   preserves the agent's context; re-dispatching fresh loses it and re-pays
-  the setup cost.
+  the setup cost. (3) **The nudge itself must repeat the no-backgrounding
+  instruction explicitly** — a generic "check on it and report back" nudge
+  can re-trigger the exact same stall if the agent still has its own
+  Monitor/background job in flight. (4) If a second nudge doesn't produce a
+  final status within one turn, stop negotiating with the stalled agent:
+  inspect its edits directly via `git diff`/`git status` in the shared
+  worktree, verify and run the gates yourself in the controller's own
+  foreground shell, tell the agent explicitly to stand down and take no
+  further action (so it can't race a late commit against yours), and write
+  the report file on its behalf so the downstream task-reviewer dispatch
+  still has its expected input file.
 - **Preventive Rule**: A subagent's reply that ends in "waiting for X" is a
   stalled agent, not a status update — nudge it the moment you see it.
   Put the foreground-gates instruction in every dispatch that will run
-  anything slower than ~1 minute, and repeat it verbatim in nudges; one
-  mention at dispatch time demonstrably does not stick across a long agent
-  session.
+  anything slower than ~1 minute — copy the sentence verbatim from this
+  entry into the dispatch prompt itself, don't rely on the subagent or a
+  future controller-self having read this file. Repeat it verbatim in every
+  nudge too, not just the original dispatch. Treat "it's been stalled for
+  hours" (not just minutes) as a stronger signal to stop nudging and
+  recover directly rather than keep asking the agent to check on itself.
 - **Similar Situations**: Any orchestrator/worker design where only the
   parent holds the event channel (CI orchestrators spawning jobs that poll
   APIs the child can't see); agents ending turns on "I'll wait for the
@@ -534,6 +568,142 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   token lifetime. Also any pipeline where a middle tier returns a 200 with
   no/empty body on upstream failure — treat empty-success as a failure
   signal, not a data-absent signal.
+
+### LL-0016 — `Agent`'s `isolation: "worktree"` param creates a SECOND worktree even when the controller already set one up; only pass it when no shared worktree exists yet
+
+- **Root Cause**: The controller had already entered a shared, dependency-installed
+  worktree (via the native `EnterWorktree` tool) to execute an 11-task
+  subagent-driven-development plan. When dispatching the first task's
+  implementer subagent, the controller passed `isolation: "worktree"` on the
+  `Agent` tool call out of habit (treating it as a generic "make this safe"
+  flag). The `Agent` tool took that literally: it created an entirely
+  separate worktree/branch, checked out from main's tip, and ran the
+  subagent's Bash commands there — a directory with no `node_modules`
+  installed. The subagent could still write files to the CONTROLLER's
+  worktree via absolute paths (creating an orphaned test file there), but
+  its actual shell commands (installs, test runs, commits) executed in the
+  wrong, dependency-less checkout and got stuck.
+- **Why It Happened**: `isolation: "worktree"` reads as "isolate this task,"
+  which sounds like exactly what you want for a implementer subagent. But it
+  means "create a NEW isolated workspace for this dispatch," which is
+  redundant and actively harmful once the controller is already working
+  inside a dedicated worktree for the whole plan — every subagent dispatched
+  from inside that worktree already inherits its cwd and isolation from the
+  controller's own working directory; it needs no isolation parameter of its
+  own.
+- **Solution**: Detected via the subagent's own transcript ("let me verify
+  node_modules in the task's worktree" — wrong path). Told the stuck agent to
+  stop and report exactly what it had touched (one orphaned file, zero
+  commits). Removed the stray file from the correct worktree, confirmed via
+  `git worktree list` that the phantom worktree had been auto-cleaned by the
+  harness (it made no lasting changes). Re-dispatched every subsequent task's
+  implementer WITHOUT `isolation`, adding an explicit "cd into the exact
+  worktree path and verify branch name + `node_modules` presence before
+  anything else" preamble as a second line of defense.
+- **Preventive Rule**: Before adding `isolation: "worktree"` to any `Agent`
+  dispatch, ask: is the controller's OWN cwd already inside a dedicated
+  worktree for this unit of work? If yes, dispatch subagents with no
+  isolation parameter at all — they inherit it. Only pass `isolation` when
+  dispatching from a shared/default checkout that itself needs protecting
+  from the subagent's changes.
+- **Similar Situations**: Any tool with a "make this isolated/sandboxed" flag
+  that actually means "create a new isolated environment" rather than
+  "inherit the caller's isolation" — read the exact semantics once per tool,
+  don't pattern-match from the flag's name. More generally: subagent-driven
+  development inside a pre-established worktree should treat that worktree
+  as the ambient environment for every dispatch in the plan, not something
+  to re-request per task.
+
+### LL-0017 — The Claude Code preview harness injects its own credentials into dev servers it manages by name, silently overriding the project's own `.env.local` for known auth-provider keys
+
+- **Root Cause**: `preview_start({name: "<config>"})` (the Browser pane's
+  named-server launcher, per `.claude/launch.json`) starts the dev server
+  process itself and appears to pre-seed environment variables for common
+  auth providers (confirmed for Clerk: `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`)
+  so that a fresh preview "just works" for sign-in without any project setup.
+  Since `dotenv`-style loaders (including Next.js's) never override an
+  already-set `process.env` value, this pre-seeded value silently wins over
+  whatever the project's own `.env.local` specifies — even after editing
+  `.env.local`, stopping the server, clearing `.next`, and restarting.
+- **Why It Happened**: The project needed to be pointed at a *different*
+  Clerk instance (a cloud/production-tied test instance) than whatever the
+  harness defaults to, to browser-verify a feature branch against real cloud
+  data. Every restart of the harness-managed server kept resolving to the
+  harness's own Clerk instance (`engaged-opossum-28.accounts.dev`) instead of
+  the one named in `.env.local` (`crisp-squirrel-45.accounts.dev`) — read at
+  first as a caching bug (tried clearing `.next`, hard-reloading, fresh
+  browser tabs), when the actual cause was an env variable set outside the
+  file entirely, in the harness's own process-launch environment for that
+  named config.
+- **Solution**: Don't rely on `preview_start({name})` when a project's real
+  env file needs to take effect. Instead: (1) start the dev server yourself
+  as a plain background process (`nohup npm run dev -- -p <port> &`, same
+  pattern already used for backend processes per LL-0002-style guidance —
+  use a port other than the harness's default to avoid a collision), (2)
+  open it with `preview_start({url: "http://localhost:<port>"})` instead of
+  `{name}` — the `url` form just opens a browser tab against an
+  already-running server and does not launch or manage the process, so no
+  env injection happens. Confirmed this actually resolves to the project's
+  configured Clerk instance.
+- **Preventive Rule**: Use `preview_start({name})` for routine "does this
+  page render" checks where default/harness-provided credentials are fine.
+  The moment a task requires the app's OWN configured secrets (a different
+  auth tenant, a specific API key, cloud vs. local backend) to be in effect,
+  run the dev server as a plain background process and open it via
+  `preview_start({url})` instead — never assume clearing caches or
+  restarting a harness-managed server will make a `.env.local` change take
+  effect for a variable the harness itself seeds.
+- **Similar Situations**: Any managed/sandboxed dev-server launcher that
+  pre-populates "convenience" credentials for common integrations (auth
+  providers, payment sandboxes, analytics) — the same silent-precedence trap
+  applies to any env var name the launcher recognizes, not just Clerk's.
+  More generally: when an env change doesn't take effect after a full
+  restart and cache clear, suspect an env var already set upstream of the
+  file loader, not a caching problem — check `env | grep <VAR>` in the
+  actual process's launch context if possible, or falsify the caching
+  hypothesis by moving to a manifestly different process/port.
+
+### LL-0018 — The Browser pane's `computer` synthetic `left_click` can land on the exact right DOM element and still not fire the page's event handlers; fall back to a native `.click()` via `javascript_tool`
+
+- **Root Cause**: Clicking a button via `computer{action:"left_click", ref:
+  ...}` sometimes produces no visible effect — no state change, no network
+  request, no console error — even though `document.elementFromPoint()` at
+  that exact coordinate confirms the click landed on the intended button and
+  not an overlay. The synthetic input event the automation layer dispatches
+  doesn't always propagate through to React's synthetic event system on this
+  page (likely a pointer-event-sequence mismatch: React's delegated listeners
+  can expect a specific pointerdown/mousedown/mouseup/click sequence that an
+  automated single "click" doesn't always reproduce faithfully).
+- **Why It Happened**: Repeated clicks on a "10 questions" button (by ref, by
+  coordinate, after re-reading fresh refs) produced zero network requests
+  three times in a row, ruling out stale-ref and coordinate-scaling
+  explanations before landing on the actual cause. `elementFromPoint` at the
+  click coordinate matching the target element proved the click reached the
+  right pixel; only dispatching `element.click()` directly via JS confirmed
+  the handler itself was fine and would fire immediately given a real click
+  event.
+- **Solution**: When a `computer` click produces no observable effect after
+  confirming (via `elementFromPoint` or similar) that it targeted the right
+  element, dispatch a native click instead:
+  `javascript_tool` with `element.click()` on the located element. This
+  bypasses the synthetic-input layer entirely and reliably triggers React's
+  handlers. Used this as the primary interaction method for the rest of a
+  multi-step browser verification (selecting answers, submitting, expanding
+  `<details>`, clicking nested buttons) once the pattern was identified,
+  rather than re-attempting `computer` clicks each time.
+- **Preventive Rule**: If a `computer` click (or tap/press) doesn't produce
+  the expected effect within ~1-2 seconds and the console/network show no
+  errors, don't assume the app is broken — verify the click landed on the
+  right element, then retry via `javascript_tool`'s native `.click()` before
+  concluding there's a real bug. For a browser-verification pass with many
+  repeated interactions, prefer `.click()` via JS from the start once this
+  symptom has appeared once in the session.
+- **Similar Situations**: Any browser-automation tool whose "click" is a
+  synthesized OS/CDP-level input event rather than a DOM-level dispatch —
+  the same silent-no-op risk applies to `left_click`, `double_click`, and
+  potentially keyboard input on frameworks with non-trivial synthetic event
+  systems (React, and similar). A native `element.click()` / `dispatchEvent`
+  fallback via an in-page JS execution tool is the general workaround.
 
 <!--
 Template for new entries — copy this block:
