@@ -214,6 +214,9 @@ Before writing new code in an area, search `memory/lessons-learned.md` and `memo
 - Never introduce a breaking change to a public interface without a corresponding ADR and CHANGELOG entry.
 - Never mark a task complete with failing tests, partial implementation, or unresolved TODOs.
 - When uncertain between two approaches with materially different tradeoffs, ask rather than silently picking one.
+- Never run a shell/background command with unbounded duration. Every command whose runtime isn't already tightly bounded gets an explicit, self-enforcing kill deadline (e.g. a wrapper script that `sleep`s in a loop and kills the PID after N seconds, or a foreground call with a known-safe max time) — never rely on remembering to check on it later. See `memory/lessons-learned.md#LL-0021`.
+- When a command that normally finishes in seconds is still running after minutes, check host resource state (`uptime`, `ps`) *before* assuming the code under test is broken. A load average many times the core count (`sysctl -n hw.ncpu` vs. the 1-min load figure) is a strong signal of host contention, not a hang in the command itself — this is especially likely on a shared/multi-tenant host. See `memory/lessons-learned.md#LL-0021`.
+- When killing a process that was launched through a wrapper (`npx`, `npm exec`, a shell function), kill the actual underlying process (`pkill -f <real binary/args>`), not just the wrapper's `$!` PID — killing only the wrapper leaves the real process orphaned, still consuming resources and contending with any retry. Verify the kill worked (`ps aux | grep <name>`) before concluding the port/lock/resource is free. See `memory/lessons-learned.md#LL-0021`.
 
 ## 17. Definition of Done
 

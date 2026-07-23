@@ -11,6 +11,11 @@ once a first tagged release exists. Until then, changes are tracked under
 
 ### Changed
 
+- `CLAUDE.md` §16 (Error Prevention Rules): added three rules on
+  long-running shell commands — always enforce a self-terminating kill
+  deadline, check host load (`uptime`) before assuming a slow command is a
+  code bug, and kill the real process behind a wrapper (`npx`/`npm exec`),
+  not just its `$!`. See `memory/lessons-learned.md#LL-0021`.
 - `CLAUDE.md` §15 (Learning System): added an explicit rule requiring
   `memory/` to be consulted before implementing a feature or fixing a bug,
   and updated as part of the same change when new knowledge is gained —

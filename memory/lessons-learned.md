@@ -785,6 +785,90 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   requires. Generalizes to: when a multi-component launcher fails, check
   the component graph before assuming the whole thing is unusable.
 
+---
+
+### LL-0021 — An open-ended `vitest run` that "hangs" for many minutes was host resource contention (load average ~80x core count), not a code or test bug — and my own diagnostic process let it run unbounded and killed the wrong process while investigating
+
+- **Root Cause**: Two distinct problems stacked. (1) I ran a full frontend
+  test suite (`npx vitest run`) without any self-enforced timeout, using
+  only the tool's own foreground call, which silently backgrounds a
+  long-running command rather than killing it — so a genuinely stuck run
+  could and did continue indefinitely with no automatic alert, until the
+  user asked "are you sure this didn't freeze?" (it should never have taken
+  a user prompt to raise that). (2) Once investigating, my first kill
+  attempts (`kill $VPID` where `$VPID` was captured from `npx vitest run &`)
+  killed the `npx` wrapper process, not the actual `node .../vitest` process
+  it spawned — so every "killed and retried" attempt left the previous
+  vitest process running as an orphan, and subsequent runs were silently
+  contending with 1-2 leftover vitest processes for the same resources,
+  making later attempts look like the same hang recurring. The underlying,
+  real cause (once processes were cleaned up and reproduced cleanly) was
+  host-level: `uptime` showed a load average of ~390-530 on a 6-core
+  machine (65-90x normal) for over ten sustained minutes, with idle-looking
+  CPU% but heavy disk I/O and active Spotlight indexing
+  (`mdworker_shared`/`mdmclient`) — most likely a newly-`npm install`ed
+  worktree's `node_modules` being indexed, compounded by (per this
+  environment's own docs) the possibility of other concurrent Claude
+  sessions sharing the same host. Vitest's worker pool (`pool: "threads"`,
+  and separately confirmed with `pool: "forks"` too) failed identically
+  with `[vitest-pool-runner]: Timeout waiting for worker to respond` for
+  even a single trivial test file — the pool couldn't spawn and get an
+  initial response from a worker in time, which is exactly what host
+  starvation looks like, and looks superficially identical to "the test
+  file is stuck."
+- **Why It Happened**: I treated "run the full test suite" as a plain
+  foreground command instead of a long/uncertain-duration command needing
+  an explicit kill deadline, so nothing forced me to notice or report a
+  stall on my own — the user had to ask. Then, mid-diagnosis, I killed
+  processes by the `$!` of the shell that launched `npx`, not the actual
+  node process `npx` execs into — an easy mistake since `npx` is
+  transparent in normal use, but it means "kill the PID I started" is not
+  the same as "kill the process actually doing the work." Finally, I didn't
+  check `uptime`/host load as a first-class diagnostic step until well into
+  the investigation — I bisected test *files* for a long time on the
+  assumption the problem was in test content, when the very first symptom
+  (hangs before printing even one result, for any file, in any pool mode)
+  was already a strong signal to check host state immediately rather than
+  the code.
+- **Solution**: (1) Killed every orphaned `vitest`/`npx` process with
+  `pkill -9 -f "vitest run"` (matches the real process by command line, not
+  a captured PID). (2) Confirmed via `uptime` that load stayed pinned in
+  the 380s-450s range for the full 10-minute observation window (not a
+  brief spike), and via `top -l 1` that Spotlight indexing processes were
+  active with heavy disk I/O despite idle CPU%. (3) Reported the honest
+  state to the user instead of claiming the frontend-suite gate was clean:
+  every individual test file already had a verified pass from its own
+  task's implementer+reviewer, so code correctness wasn't in question —
+  only the aggregate run was blocked, and was recorded as such in the
+  session's progress ledger rather than silently retried into a false
+  "done."
+- **Preventive Rule**: Added to `CLAUDE.md` §16 (Error Prevention Rules):
+  (a) every long/uncertain-duration shell command gets an explicit,
+  self-enforcing kill deadline, never an open-ended foreground call left to
+  "check on later"; (b) when a command that should take seconds is still
+  running after minutes, check `uptime`/host load *before* assuming the
+  code under test is broken — a load average many times the core count is
+  the first thing to rule out, not the last; (c) when killing a process
+  launched through a wrapper (`npx`, `npm exec`, a shell function), kill
+  the real underlying process via `pkill -f <real binary>`, not the
+  wrapper's `$!`, and verify via `ps`/`pgrep` that it's actually gone
+  before retrying.
+- **Similar Situations**: Any "the tests just hang" report on a fresh
+  worktree/`npm install` (Spotlight/antivirus indexing a large new
+  `node_modules` is a common, overlooked cause on macOS); any worker-pool-
+  based test runner (Vitest, Jest with `workerThreads`, Playwright's
+  parallel workers) reporting a timeout waiting for a worker to respond —
+  treat that error message class as a host-resource-first diagnosis, not a
+  test-content bisection, especially when it reproduces on a single trivial
+  file; any diagnostic loop that repeatedly "kills and retries" a
+  wrapper-spawned process without confirming the underlying process is
+  actually dead each time; any shared/multi-tenant execution host where
+  another session's load is invisible until `uptime` is checked directly.
+  Complements `LL-0014` (background *subagents* silently stalling waiting
+  on a notification that can't reach them) — this entry is the mirror case
+  for the controller's own foreground commands: don't let anything, agent
+  or shell command, run unbounded and unmonitored.
+
 <!--
 Template for new entries — copy this block:
 
