@@ -705,6 +705,86 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   systems (React, and similar). A native `element.click()` / `dispatchEvent`
   fallback via an in-page JS execution tool is the general workaround.
 
+### LL-0019 — A freshly created git worktree (default `fresh` base ref) silently excludes local commits that haven't been pushed to origin
+
+- **Root Cause**: The native `EnterWorktree` tool creates a new worktree
+  branched from `origin/<default-branch>` by default (`worktree.baseRef:
+  fresh`), not from the current local branch's HEAD. Two commits (a design
+  spec + an implementation plan) had been committed to local `main` but not
+  yet pushed to `origin/main` before the worktree was created to execute
+  that very plan. The worktree's branch started one HEAD behind local
+  `main`, silently missing exactly the two files the whole session was
+  about to execute — a plan-extraction script failed with "no such plan
+  file" because the plan simply wasn't there.
+- **Why It Happened**: The habitual sequence (brainstorm → write spec →
+  write plan → commit both → enter worktree → execute) had never previously
+  hit this, because in prior sessions the preceding work had already been
+  pushed, or the worktree was created before any new local-only commits
+  existed. Nothing about "start a worktree" signals that its default base
+  ref is the *remote* tracking branch rather than local HEAD — it's a
+  reasonable-sounding but wrong assumption that a fresh worktree starts
+  "from where I am now."
+- **Solution**: Ran `git log --oneline main -3` from inside the worktree to
+  confirm the local `main` ref was still visible (worktrees share the same
+  object database, so unpushed local commits are reachable even though the
+  worktree's own branch doesn't start from them), then `git rebase main`
+  to fast-forward the worktree branch onto local `main`, which picked up
+  both missing commits cleanly with no conflicts.
+- **Preventive Rule**: Before creating a worktree (via `EnterWorktree` or
+  `git worktree add`) to execute work whose prerequisites were just
+  committed locally, either (a) push the current branch to origin first, or
+  (b) immediately after entering the worktree, run `git log --oneline
+  <original-branch> -3` and diff against the worktree's own `HEAD` — if the
+  worktree is missing expected commits, `git rebase <original-branch>`
+  before doing anything else. Don't assume a just-made local commit is
+  automatically present in a newly created isolated workspace.
+- **Similar Situations**: Any tool or workflow that creates an isolated
+  workspace (a fresh container, a CI runner, a second git worktree, a cloud
+  sandbox) whose default checkout point is a remote/published ref rather
+  than the requesting session's actual local state — the same class of "my
+  recent local-only work silently isn't there" surprise applies whenever
+  isolation is implemented via "clone/branch from the canonical remote"
+  rather than "snapshot my current state."
+
+### LL-0020 — `supabase start`'s own exit status isn't a reliable signal for whether the app can actually run; check individual container health, not the CLI wrapper
+
+- **Root Cause**: `supabase start` repeatedly reported failure and
+  auto-tore-down the whole stack (`Stopping containers...`) because
+  `supabase_pg_meta` (the Postgres-introspection sidecar that only powers
+  Supabase Studio's admin UI) failed its health check — even while `db`,
+  `kong` (the API gateway), and `rest` (PostgREST) were already up and
+  healthy. The actual application (a FastAPI backend + Next.js frontend
+  that only ever talk to `kong`→`rest`, never to `pg_meta`/Studio) had
+  everything it needed the whole time; the CLI's own success/failure gate
+  is stack-wide, not scoped to what a given caller actually needs.
+- **Why It Happened**: Treated `supabase start`'s exit code as the source
+  of truth for "is the local backend usable," rather than checking `docker
+  ps --filter name=supabase` directly to see which specific containers were
+  healthy. Each failed `supabase start` attempt tore the whole stack down
+  again, needlessly repeating db/kong/rest's (successful, slower) startup
+  work before the next retry.
+- **Solution**: After a `supabase start` failure, ran `docker ps --filter
+  "name=supabase" --format "table {{.Names}}\t{{.Status}}"` directly —
+  confirmed `db`/`kong`/`rest`/`inbucket` were healthy despite the CLI's
+  reported failure — and proceeded to start the app servers against them
+  without waiting for `pg_meta`/`studio` to recover. (In this case,
+  `pg_meta` also self-healed on a subsequent plain retry a couple of
+  minutes later, so simply retrying works too — but isn't necessary to
+  unblock app-level work.)
+- **Preventive Rule**: When `supabase start` (or any multi-service
+  `docker compose`-style stack launcher) reports failure, don't
+  retry-and-wait blindly — check which specific containers/services are
+  actually healthy via `docker ps`, and identify whether the failing
+  service is on the critical path for the task at hand (here: an
+  admin/introspection UI, not the data path). Only chase the launcher's own
+  success if the task genuinely needs the failing service.
+- **Similar Situations**: Any local dev stack composed of multiple
+  containers/processes with an aggregate "all healthy or nothing" launcher
+  (docker-compose, supabase CLI, firebase emulators, LocalStack) — the
+  aggregate gate is usually stricter than what any single task actually
+  requires. Generalizes to: when a multi-component launcher fails, check
+  the component graph before assuming the whole thing is unusable.
+
 <!--
 Template for new entries — copy this block:
 

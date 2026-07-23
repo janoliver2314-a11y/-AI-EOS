@@ -62,9 +62,39 @@ occasions in one session).
 **When to use**: any request to add/install a GitHub repo as a tool for an
 AI coding agent environment.
 
+## Pattern: Verify a state-dependent UI against live data by borrowing a real state transition, not mocking one
+
+**Used in**: browser-verifying a "reviewer queue" UI whose local seed data
+was 100% in a terminal `published` state, so the empty-queue path was the
+only thing naturally reachable.
+
+**Shape**:
+1. Identify one row of real (non-fake) data and use an admin/service-role
+   credential to write it back to an earlier state in the same state
+   machine the UI drives (e.g. `published` → `ai_generated`).
+2. Exercise the actual UI against that row — not a mock, not a fixture
+   file — so every rendering path, button, and API call under test is the
+   real one.
+3. Let the UI's own forward-moving actions (approve → publish, in this
+   case) carry the row back to its original state, rather than hand-writing
+   the original value back afterward. This is both cheaper (no separate
+   restore step to get subtly wrong) and a stronger test — it exercises the
+   state machine's actual transitions, not just static rendering.
+4. Confirm the row landed back where it started before considering the
+   verification complete.
+
+**When to use**: verifying a review/moderation/approval-style UI (or any UI
+gated on a specific record state) when the available seed/dev data doesn't
+naturally include a record in the state you need to see — and the workflow
+itself is capable of restoring the state you borrowed. Only do this against
+local/dev data with a reversible, forward-path-restorable transition; never
+against production data, and never if the workflow can't cleanly return the
+record to its original state (in which case, do an explicit restore write
+and verify it, rather than assuming the workflow will handle it).
+
 ## Status
 
-_Last reviewed: 2026-07-03, after adding the Clone-Inspect-Decide pattern
-above. Earlier note (repository bootstrap, 2026-07-01) about this file
-growing as concrete code patterns emerge in `src/` still applies — no
-`src/` patterns yet._
+_Last reviewed: 2026-07-22, after adding the reversible live-data
+verification pattern above. Earlier note (repository bootstrap, 2026-07-01)
+about this file growing as concrete code patterns emerge in `src/` still
+applies — no `src/` patterns yet._
