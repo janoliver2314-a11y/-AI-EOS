@@ -869,6 +869,131 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   for the controller's own foreground commands: don't let anything, agent
   or shell command, run unbounded and unmonitored.
 
+---
+
+### LL-0022 — Read/Write/Edit-class tools resolve paths against a process's spawn cwd, not the shell's `cd` state — a git worktree's isolation is invisible to them
+
+- **Root Cause**: Inside a git worktree (created via a native `EnterWorktree`
+  tool or `git worktree add`), Bash's `cd` genuinely changes the shell's
+  working directory, but file-editing tools (Read/Write/Edit, and any
+  subagent's own copies of them) resolve relative — and even some
+  absolute-looking — paths against the process's original spawn root, not
+  the shell's current directory. Two independent incidents in one session
+  confirmed this: (1) a dispatched implementer subagent committed its
+  Task-2 work to the *main* checkout instead of the worktree, even though
+  its dispatch prompt told it to `cd` into the worktree first; (2) the
+  controller itself (not a subagent) edited a plan file using a
+  worktree-prefixed absolute path that still silently resolved to the main
+  checkout's copy of the same relative path, because the path was typed
+  from memory rather than freshly derived from `pwd`.
+- **Why It Happened**: `cd` is a shell built-in that only affects the shell
+  process's own state; it has no effect on a tool call's internal path
+  resolver, which was already primed with a root at process/session start.
+  This is easy to miss because Bash commands issued right after `cd` behave
+  exactly as expected, creating false confidence that the whole toolset is
+  now "in" the worktree.
+- **Solution**: For incident 1, cherry-picked the subagent's commit onto
+  the worktree and hard-reset main to discard it. For incident 2, committed
+  the correct edit on main, pushed, and fast-forward-merged it into the
+  worktree.
+- **Preventive Rule**: (a) Every subagent dispatch into a worktree gets a
+  mandatory first instruction: run `pwd` and `git branch --show-current`,
+  confirm both match the worktree before touching any file, and report
+  back if they don't. (b) Every file path used in a dispatch prompt or a
+  controller's own tool calls must be the full, freshly-derived
+  worktree-absolute path (from that session's own `pwd`/`git rev-parse
+  --show-toplevel`), never a path typed from memory or copied from an
+  earlier main-checkout context. (c) After every subagent dispatch that is
+  supposed to commit, independently verify with `git log` in *both* the
+  worktree and the main checkout — never trust a subagent's self-reported
+  "committed" without checking where.
+- **Similar Situations**: Any multi-worktree or multi-checkout workflow
+  (git worktrees, multiple sandboxed containers sharing a filesystem,
+  parallel subagent fleets each meant to operate in a different directory)
+  where isolation is enforced at the shell/process level but tool calls
+  have their own, separately-primed notion of "current directory." Treat
+  this as true for any harness until proven otherwise for that specific
+  harness.
+
+### LL-0023 — A migration that adds a CHECK constraint before backfilling existing rows passes on an empty dev-reset DB and fails against real production data
+
+- **Root Cause**: A migration added a `CHECK` constraint on a column in the
+  same transaction as the `ALTER TABLE ... ADD COLUMN`, then backfilled
+  existing rows with an `UPDATE` afterward. Statement order inside the
+  migration file was: add column → add constraint → backfill. Against a
+  freshly reset local dev database (`supabase db reset`, or equivalent
+  migrate-from-empty flows), this always passes because there are zero
+  existing rows for the constraint to reject at the moment it's added.
+  Against the real cloud/production database, which already had rows, the
+  `ADD CONSTRAINT` step validated every existing row against the new
+  constraint immediately and failed, because those rows hadn't been
+  backfilled yet — the backfill statement never got a chance to run.
+- **Why It Happened**: Local dev workflows built around "reset from
+  scratch and replay every migration" never exercise the
+  constraint-against-existing-data path that a real, already-populated
+  database always exercises. A migration can look completely correct and
+  pass every local test while being silently broken for the one
+  environment — the real database — where migrations actually have
+  consequences.
+- **Solution**: Reordered the migration's statements: add column (nullable
+  or with a safe default) → backfill existing rows via `UPDATE` → add the
+  `CHECK` constraint last, once every row already satisfies it. Applied
+  the corrected order directly to fix the live database, and also
+  corrected the migration file itself so the same bug can't recur on the
+  next fresh deploy or reset.
+- **Preventive Rule**: For any migration that adds both a new column and a
+  constraint referencing it: constraints always go *after* any backfill
+  that populates the column for existing rows, never before. When only a
+  local/empty-DB test is available, treat that pass as necessary but not
+  sufficient — explicitly re-read the statement order and ask "would this
+  survive running against a table with existing rows that violate the new
+  constraint until backfilled?"
+- **Similar Situations**: Any schema migration adding `NOT NULL`, a `CHECK`,
+  or a `FOREIGN KEY` constraint to an existing table in any SQL database
+  (Postgres, MySQL, SQLite) — the ordering rule is universal, not
+  Postgres-specific. Especially relevant whenever local dev and production
+  diverge in whether migrations are actually kept in sync (see the
+  "migration gap" pattern below).
+
+### LL-0024 — A test that calls a framework-routed function directly bypasses the framework's own response validation
+
+- **Root Cause**: A fix changed the *shape* of what a function returned
+  (from a flat list to a per-group dict) and was verified by a test that
+  imported the function and called it directly — the test passed. That
+  function's return value was also serialized through a web framework's
+  declared response model (FastAPI + Pydantic in this case), which
+  performs its own validation/serialization pass at the HTTP layer,
+  independent of the function's own return type hints. The first real HTTP
+  request through the endpoint threw a 500 response-validation error that
+  the passing unit test never had any chance of catching, because calling
+  the Python function directly skips the framework's request/response
+  pipeline entirely.
+- **Why It Happened**: A test that imports and calls a service function
+  looks like it's testing "the real code," and for pure logic it is — but
+  for any function whose return value flows through a framework boundary
+  (a FastAPI `response_model`, a DRF serializer, a GraphQL resolver's
+  declared type), the framework's own validation is part of the contract
+  and isn't exercised unless the test goes through that boundary.
+- **Solution**: Widened the declared response-model type to match the new
+  return shape, and added a genuine HTTP-layer test (via the framework's
+  test client hitting the real route) that reproduces the original 500 and
+  now passes.
+- **Preventive Rule**: Whenever a change alters the *shape* (not just the
+  value) of data returned by any function whose return type is also bound
+  to a framework response/serialization contract, the regression test for
+  that change must go through the real request path (`TestClient`,
+  equivalent HTTP test client, or an actual request), not just call the
+  function directly. A service-level unit test proves the logic is right;
+  it proves nothing about whether the API contract the framework enforces
+  still holds.
+- **Similar Situations**: Any typed API framework with declared
+  request/response schemas (FastAPI + Pydantic, DRF serializers, GraphQL
+  resolvers, gRPC service definitions, tRPC procedures) — a passing
+  function-level test for a handler/resolver/service method is not
+  evidence the framework's own serialization layer still accepts its
+  output. Check this explicitly whenever a task's diff touches a function
+  whose return type doubles as a framework contract.
+
 <!--
 Template for new entries — copy this block:
 
