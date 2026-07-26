@@ -994,6 +994,35 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   output. Check this explicitly whenever a task's diff touches a function
   whose return type doubles as a framework contract.
 
+### LL-0025 — Reading a containerized SQLite database from the macOS host corrupts the running app's connection
+
+- **Root Cause**: Ran `sqlite3` on the host against an n8n database file
+  that lives in a Docker bind mount (`database.sqlite` in WAL mode) while
+  the container was actively using it. SQLite's WAL coordination relies on
+  a shared-memory file (`-shm`) and POSIX advisory locks, and Docker
+  Desktop's virtiofs file sharing cannot coordinate either across the
+  host/guest kernel boundary. The running app's pooled connections started
+  failing every query with `SQLITE_NOTADB: file is not a database`.
+- **Why It Happened**: Read-only queries feel harmless — "I'm just
+  SELECTing." But WAL-mode SQLite readers are not passive: they open the
+  `-shm` file, take locks, and can trigger WAL checkpoints. Two kernels
+  each maintaining their own view of those locks over virtiofs is
+  undefined behavior, regardless of read vs. write intent.
+- **Solution**: `docker restart <container>` — the app reopened the
+  database cleanly (WAL replayed, nothing lost). Switched all further
+  reads to the app's own HTTP API instead of the file.
+- **Preventive Rule**: Never open a SQLite file with host tools while a
+  container is using it through a bind mount — not even read-only. Read
+  through the app's API (webhook, REST) or `docker exec` a query inside
+  the container so exactly one kernel owns the locks. If host-side
+  analysis is truly needed, copy the `.sqlite` + `-wal` + `-shm` files
+  first and open the copy.
+- **Similar Situations**: Any file-locking-dependent store accessed across
+  a VM/host file-sharing boundary — SQLite under Docker Desktop
+  (virtiofs/gRPC-FUSE), LMDB or DuckDB files in bind mounts, even two
+  SQLite clients on an NFS mount. Also applies in reverse: a host app's
+  SQLite DB should not be queried from inside a container via a mount.
+
 <!--
 Template for new entries — copy this block:
 
