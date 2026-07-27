@@ -1047,7 +1047,8 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
 - **Similar Situations**: Any hot-reload dev server + worktree/multi-clone
   workflow; docker-compose mounting the wrong checkout; a globally
   installed CLI shadowing the repo-local build; "works locally" because a
-  stale process on the port predates the fix.
+  stale process on the port predates the fix. The both-trees warning above
+  recurred and has its own entry with the proven mechanism: see LL-0031.
 
 ### LL-0027 — Queries that grow with a table, hidden by local data lagging prod scale
 
@@ -1105,6 +1106,196 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   behavior the test claims to cover (this session's other instance:
   monkeypatching the selection function made shuffle regressions
   undetectable by the HTTP tests).
+
+### LL-0029 — Competing gesture listeners: `pointerdown` pre-empts the touch sensor whose delay was the whole mitigation
+
+- **Root Cause**: Adding drag to controls that had to stay tappable, the
+  sensor set was PointerSensor (activation distance 8) + TouchSensor
+  (delay 150, tolerance 8), and every drag source got
+  `touch-action: none`. On touch devices `pointerdown` fires *before*
+  `touchstart`, so PointerSensor claimed every gesture and TouchSensor's
+  delay/tolerance never applied — the intended "short swipe scrolls,
+  long-press drags" behavior never existed at all. `touch-action: none`,
+  which is what makes pointer-based touch dragging work in the first
+  place, then blocked page panning anywhere a drag source sat. On a phone
+  the control list filled most of the viewport, so scrolling over it
+  simply stopped — a regression on 26 already-shipped items, introduced by
+  a feature that never touched them beyond reusing their input component.
+- **Why It Happened**: The plan named TouchSensor's `delay` as the
+  scroll-vs-drag mitigation without checking event ordering, so a config
+  option was trusted to arbitrate a race it never entered.
+  `touch-action: none` was carried in from a drag recipe as "the thing
+  that makes it work," with no one asking what it costs. Neither layer of
+  testing could see it: jsdom has no compositor, and the automation
+  browser reported `navigator.maxTouchPoints === 0`, so no synthetic touch
+  test could reproduce panning either. It surfaced only when a
+  whole-branch review read the CSS against the sensor choice.
+- **Solution**: Replaced PointerSensor with dnd-kit's MouseSensor +
+  TouchSensor pair — mouse keeps distance-8 so a stationary press-release
+  stays a click, touch keeps delay-150/tolerance-8 so a short swipe
+  scrolls and a long-press drags — and downgraded the sources to
+  `touch-action: manipulation`. Verified by three proxies, with the real
+  finding stated as unverified: computed `touch-action` on every drag
+  source, a short synthetic swipe leaving every `touchmove`
+  un-`preventDefault`ed and starting no drag, and a >150ms press
+  correctly activating one. A real-device pan check was recorded as still
+  outstanding rather than implied.
+- **Preventive Rule**: When two listeners can claim the same gesture,
+  choose them by event ordering, not by config intent — `pointerdown`
+  precedes `touchstart`, so any PointerSensor pre-empts a TouchSensor's
+  delay. Where touch scrolling must survive, use MouseSensor +
+  TouchSensor. Treat every `touch-action: none` as an explicit decision to
+  disable panning over that element's area, and say what it costs at the
+  line you add it. When a suite provably cannot observe a behavior
+  (`maxTouchPoints === 0`, no compositor), name the proxies you used and
+  what remains unproven — never let green tests imply coverage the
+  environment cannot produce.
+- **Similar Situations**: `preventDefault()` on `touchstart` suppressing
+  click synthesis; `user-select: none` / `overscroll-behavior` copied from
+  the same recipes; passive-vs-active listener assumptions; retrofitting
+  any gesture onto controls that already had a simpler interaction
+  (dragging onto buttons, swipe onto a scroller); a resized desktop
+  browser standing in for a real touch device; and generally any "the
+  option handles it" belief about two handlers competing for one input.
+
+### LL-0030 — Omitting a library's keyboard sensor removed the capability but not its promise to screen readers
+
+- **Root Cause**: A drag implementation deliberately left out dnd-kit's
+  KeyboardSensor, because its Enter/Space activation would have fought the
+  buttons' existing click handlers. The library's *default*
+  `screenReaderInstructions` still said "To pick up a draggable item,
+  press the space bar," and the spread `{...attributes}` attached an
+  `aria-describedby` pointing at that text to every draggable control. So
+  assistive-tech users were instructed to press a key that no longer
+  picked anything up — and space still activated the button, which
+  **removed** a placed item or **cleared** a filled slot. The narration
+  described a removed capability, and the key it named destroyed the
+  user's work instead. `attributes` also stamped
+  `aria-roledescription="sortable"`/`"draggable"` onto plain buttons that
+  no longer were either.
+- **Why It Happened**: Omitting a sensor is a local edit to behavior;
+  the library's default ARIA narration is global and assumes the full
+  sensor set, so removing the handler silently left the promise standing.
+  Nobody asked what the library still *asserts* to assistive tech after
+  its interaction model was deliberately narrowed. Coverage could not
+  catch it either: the tests exercised tap paths and pure reducers, and
+  none of them read `aria-describedby` — an entire output channel had no
+  assertions anywhere.
+- **Solution**: Passed explicit
+  `accessibility={{ screenReaderInstructions: { draggable: … } }}` to
+  every drag context, describing the interaction that actually exists
+  (activate the control to place or remove; drag with mouse or
+  long-press), and overrode `roleDescription` on the draggables. Doing so
+  surfaced a second finding worth recording: the library's
+  `aria-describedby` points at an id that does not exist in the rendered
+  DOM, so neither the old misleading text nor the new correct text is
+  actually announced. The original defect was therefore inert — by luck,
+  not design — and the fix is currently unobservable for the same reason.
+- **Preventive Rule**: When you deliberately omit part of a library's
+  interaction model, audit what the library still *says* about it —
+  default ARIA text, `roledescription`, help strings, keyboard hints —
+  because deleting a handler does not retract a promise. Treat an
+  announced-but-absent affordance as worse than a missing one: the key the
+  instructions name almost always still does *something*, and that
+  something is often destructive. And verify an accessibility fix by
+  confirming the announcement reaches the accessibility tree, not merely
+  that the string was passed to the right prop.
+- **Similar Situations**: `aria-label` copied from a component that had
+  more behavior; `role="button"` on a `div` with no key handler;
+  focusable-but-disabled controls; tooltips and help text surviving the
+  removal of the shortcut they describe; i18n strings outliving their
+  feature; any library whose defaults narrate a config you have since
+  narrowed (form validation messages, carousel/table a11y text); and more
+  broadly, any output channel — ARIA, logs, telemetry, emails — that no
+  test asserts on and therefore drifts from the behavior it reports.
+
+### LL-0031 — A git worktree does not isolate the tooling's own config directory
+
+- **Root Cause**: A task running inside a git worktree edited a file under
+  the agent harness's config directory (`.claude/skills/**`). It committed
+  correctly on the worktree's branch **and** left a byte-identical
+  uncommitted copy in the *primary* checkout — so the default branch sat
+  dirty with a change that belonged to a feature branch. This is not an
+  incidental stray write: the harness resolves its config/skills directory
+  from the primary working directory rather than the active worktree, which
+  makes it systematic for that whole path class. Confirmed by reverting the
+  primary copy and watching the skill metadata the harness reported switch
+  back to the pre-change version in the same session.
+- **Why It Happened**: Worktree isolation is genuinely real for tracked
+  source, and that creates a false sense of total coverage — nothing in the
+  setup signals that an entire category of path is shared with the primary
+  tree. The evidence is also absent from where you would look for it:
+  `git status` **inside** the worktree was clean, and nothing prompts you
+  to inspect a tree you are not working in. Second occurrence of the
+  wrong-tree class after LL-0026, which had flagged the symptom without
+  identifying the mechanism.
+- **Solution**: Proved the primary checkout's copy was byte-identical to
+  the branch's committed version — `git diff <branch>:<path> -- <path>`,
+  or equivalently `git hash-object <path>` against
+  `git rev-parse <branch>:<path>` — which established the content was
+  already safe on the pushed branch, then `git restore`d it so the change
+  would reach the default branch through the pull request as designed.
+- **Preventive Rule**: Treat a worktree as isolating tracked source only.
+  Tooling and agent config directories — `.claude/`, editor state, hook and
+  MCP config, anything the tool resolves from "the project root" — are
+  effectively shared, so assume writes there land in the primary tree. Run
+  `git status` in the PRIMARY checkout at the end of any branch whose work
+  touched such a path. Before discarding a stray, *prove* it is
+  byte-identical to the branch's committed version instead of assuming:
+  identical means `git restore` loses nothing, and different means you are
+  one command away from destroying unique work.
+- **Similar Situations**: LL-0026's dev server launched from the wrong
+  checkout (same worktree context, different mechanism); user-level or
+  global tool config shadowing a repo-local one; a repo-scoped task
+  mutating `~/.config`; `.venv` / `node_modules` symlinked or shared across
+  worktrees; and the downstream cost if the stray goes unnoticed —
+  committing it to the default branch conflicts with the very pull request
+  that carries the identical change.
+
+### LL-0032 — "Inconclusive under automation" was the defect, not a harness artifact
+
+- **Root Cause**: During browser verification one interaction — dragging an
+  already-placed item back to the source pool — would not complete; the
+  drop kept resolving onto the element's own slot. It was recorded honestly
+  as "inconclusive under automation," attributed to synthetic-event
+  limitations, and waved through because a second interaction (tap to
+  clear) covered the same user action. It was a real product defect: the
+  drag library's default collision strategy compared distances between
+  element *centers*, and with one large drop target competing against
+  several small ones the nearest center was never the intended one. An A/B
+  under an identical procedure settled it in a single pass — the default
+  strategy dropped the item on the **wrong** target, while the
+  pointer-position strategy resolved correctly.
+- **Why It Happened**: "The harness cannot do this" is a comfortable
+  explanation that terminates investigation, and it was propped up by two
+  true facts: synthetic pointer events genuinely are lossy, and a working
+  alternative path existed, which removed all pressure to explain the
+  anomaly. The attribution to tooling was never itself treated as a claim
+  requiring evidence. Worse, the anomaly's *shape* — a drop resolving back
+  onto its origin — was equally consistent with both explanations, so
+  nothing in the observation alone could separate them.
+- **Solution**: A reviewer proposed the alternative collision strategy as
+  an **experiment** rather than as a fix. Holding the procedure fixed and
+  varying only the implementation discriminated immediately: default → item
+  landed on the wrong target; pointer-based → correct. The strategy was
+  changed for that context, the anomaly reclassified from "environment
+  gap" to "defect, fixed," and the earlier verification note corrected.
+- **Preventive Rule**: Treat "inconclusive because of the tooling" as a
+  hypothesis, never a conclusion — it needs evidence like any other claim.
+  When an observation is consistent with both a harness artifact and a
+  product defect, discriminate by holding the procedure fixed and varying
+  the implementation (A/B two configurations); differing outcomes convict
+  the product. Be most suspicious precisely when a working alternative path
+  lets you move on without explaining the anomaly — that convenience is
+  what buys a defect its ticket to production. See rule 7 in
+  `docs/standards/testing.md`.
+- **Similar Situations**: "Flaky" used as a diagnosis rather than a symptom
+  (rule 6 in the same standard); blaming CI for a failure that reproduces
+  locally on the same inputs; dismissing a timeout as network noise;
+  attributing a visual difference to the screenshot pipeline; any "known
+  limitation" inherited without a reproduction; and LL-0028's
+  non-discriminating regression tests — the same family, where the evidence
+  on hand cannot distinguish two live hypotheses.
 
 <!--
 Template for new entries — copy this block:
