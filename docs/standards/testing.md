@@ -41,6 +41,13 @@ configuration changes are exempt unless they affect runtime behavior.
    network calls to live services, or unseeded randomness in unit tests.
 6. **Flaky tests are fixed or removed**, never silently ignored/retried
    into passing.
+7. **An inconclusive verification result is a finding, not a gap** —
+   attributing it to the tooling is a hypothesis that needs evidence like
+   any other. Where an observation fits both a harness artifact and a
+   product defect, hold the procedure fixed and vary the implementation
+   (A/B two configurations): differing outcomes convict the product. When a
+   suite provably *cannot* observe a behavior, state the proxies used and
+   what remains unproven rather than letting a green run imply coverage.
 
 ## Design Decisions
 
@@ -80,6 +87,10 @@ describe("webhook signature verification", () => {
 - Adding `skip`/`todo` tests that are never revisited.
 - Asserting on incidental implementation detail (internal call counts,
   private state) instead of observable behavior.
+- Recording an inconclusive observation as an environment limitation
+  without testing that attribution — a harness artifact and a real defect
+  look identical until you deliberately discriminate them, and a working
+  alternative path makes it easy to stop looking.
 
 ## Future Improvements
 
