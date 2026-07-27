@@ -1023,6 +1023,89 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   SQLite clients on an NFS mount. Also applies in reverse: a host app's
   SQLite DB should not be queried from inside a container via a mount.
 
+### LL-0026 — A dev server launched from the wrong checkout mimics missing code exactly
+
+- **Root Cause**: Browser-verifying a feature built in a git worktree
+  against dev servers that were launched from the main checkout — the
+  running process served pre-feature code, producing a
+  `ResponseValidationError` that named exactly the union members the
+  feature was supposed to have added, indistinguishable at first glance
+  from "the union widening was never done."
+- **Why It Happened**: The preview/launcher config was anchored at the
+  main project root; the port responding looked like "the server is up."
+  Nothing forced the check that the server's watch/root directory was the
+  worktree. Third occurrence of the stale-server class in one project.
+- **Solution**: The server's own startup log (uvicorn prints its watch
+  directory) identified the wrong root in one line. Added launcher entries
+  pinned to the worktree cwd; re-verified against those.
+- **Preventive Rule**: Before browser/manual verification of worktree- or
+  branch-isolated work, confirm the running server's root/watch directory
+  IS the isolated checkout — read the startup log line; never infer from
+  the port responding or the app rendering. Also check `git status` in the
+  MAIN checkout after subagent work in a worktree: a subagent can write to
+  both trees (found byte-identical strays this session).
+- **Similar Situations**: Any hot-reload dev server + worktree/multi-clone
+  workflow; docker-compose mounting the wrong checkout; a globally
+  installed CLI shadowing the repo-local build; "works locally" because a
+  stale process on the port predates the fix.
+
+### LL-0027 — Queries that grow with a table, hidden by local data lagging prod scale
+
+- **Root Cause**: An API `count` parameter had a lower bound but no upper
+  bound; an oversized value silently capped to "everything published," and
+  the resulting id list was rendered by PostgREST into the query string —
+  so request size grew with the TABLE, not the request, until the URI blew
+  past the server limit (HTTP 414).
+- **Why It Happened**: Local seed data lagged production scale (371 rows
+  locally vs 572 in prod), so the full local suite stayed green while the
+  failure was already reachable in production. The gap surfaced only when
+  local data was backfilled to prod scale and four tests failed at once.
+- **Solution**: Chunked the id-list fetch (bounded URI regardless of bank
+  size), then bounded the input at the system boundary (`le=` a
+  domain-meaningful maximum), each with regression tests proven to fail
+  when neutered.
+- **Preventive Rule**: (1) Keep local/test data representative of
+  production scale, or add one test that runs at prod scale — a green
+  suite against smaller data proves nothing about size-dependent failures.
+  (2) Never build a request whose size scales with a table (id lists in
+  query strings, giant IN clauses); chunk or POST. (3) Every numeric input
+  at a system boundary gets an upper bound rooted in the domain.
+- **Similar Situations**: `IN (...)` lists hitting max query length;
+  HTTP-header/URL limits behind REST-over-query-string layers (PostgREST,
+  OData); pagination-free "fetch all" endpoints that work until the table
+  grows; batch APIs whose payload grows with a join.
+
+### LL-0028 — "Fails before the fix" evidence is worthless unless the failure is behavioral
+
+- **Root Cause**: A fix wave shipped regression tests plus the claim they
+  failed pre-fix — but the evidence came from stashing the fixed FILE, so
+  the tests failed on a missing import, not on the defective behavior. In
+  truth the tests were non-discriminating: the buggy logic could be fully
+  restored (call sites reverted, the fix branch deleted) with the suite
+  staying green, because the fixtures' data happened to make wrong and
+  right code produce identical output.
+- **Why It Happened**: Every test hand-fed a correct input value instead
+  of deriving it the way the real call site does, so the producer/consumer
+  contract was never exercised; and the discrimination check removed the
+  file instead of neutering the logic.
+- **Solution**: Re-review caught it; replaced with a direct unit test of
+  the helper plus component tests whose fixture data makes wrong and right
+  outputs visibly differ; verified by surgically neutering ONLY the fix's
+  logic in place (file, exports, imports intact) → exactly the new tests
+  fail; restore → all green.
+- **Preventive Rule**: Prove a regression test discriminates by reverting
+  or neutering the specific defective logic IN PLACE and watching that
+  test fail for the behavioral reason — never by deleting/stashing files
+  (import errors prove nothing). When the bug is "call site passes the
+  wrong value," the test must compute the value the way the call site
+  does, or use fixtures where wrong and right visibly diverge.
+- **Similar Situations**: Mutation-testing zero-kill tests; fixtures whose
+  defaults coincide with the buggy path's output; snapshot tests
+  regenerated from broken output; mocking the exact function whose
+  behavior the test claims to cover (this session's other instance:
+  monkeypatching the selection function made shuffle regressions
+  undetectable by the HTTP tests).
+
 <!--
 Template for new entries — copy this block:
 
