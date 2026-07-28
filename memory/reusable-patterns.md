@@ -145,11 +145,57 @@ where a background subagent went quiet mid-task without a final report
 async job whose completion notification might not reliably reach its own
 next turn) appears idle and someone asks whether it's actually working.
 
+## Pattern: Prove a new test discriminates by breaking the implementation, not by deleting it
+
+**Used in**: two fix waves in one subagent-driven feature branch, each
+adding tests to close a gap a reviewer had found. Operationalizes
+`memory/lessons-learned.md#LL-0028` (where "fails before the fix" evidence
+turned out to come from a missing import rather than the defective
+behavior) and rule 7 in `docs/standards/testing.md`.
+
+**Shape**:
+1. Write the new test against the fixed code and watch it pass. This
+   proves nothing yet — it is the starting point, not the evidence.
+2. **Reintroduce the defect in the implementation**, as narrowly as
+   possible: change the one expression, swap the two arguments, restore
+   the old copy string. Do not stash, delete, or rename the file — a
+   test that fails on a missing import has told you only that the import
+   is missing.
+3. Run the test and record *which* assertions fail and with what message.
+   Exactly the intended ones should fail. If none fail, the test does not
+   discriminate and the gap is still open. If more fail than expected,
+   you have learned the blast radius of that expression.
+4. Revert the deliberate break and confirm a clean `git diff` on the
+   implementation file before committing — the revert is the step most
+   likely to be forgotten, and it ships the defect.
+5. Report the observation, not the intention: "with the count computed
+   globally, 1 of 10 failed — the second-tab assertion" beats "verified
+   the test catches it."
+
+**Why it works**: the failure mode this guards against is a test that
+passes for both the right and the wrong implementation, which is
+invisible from a green run and from a red run caused by anything other
+than behavior. Only varying the behavior while holding everything else
+fixed separates the two.
+
+**Payoff observed**: in one case a whole pre-existing suite proved
+entirely blind to an argument swap — reversing `(given, correct)` in a
+scoring dispatcher failed exactly 1 of 66 tests, the newly added one.
+Without step 2 that suite would have been assumed to cover the branch's
+central invariant.
+
+**When to use**: any test written to close a reviewer-found gap, any
+regression test for a bug being fixed, and especially any test whose
+fixtures are symmetric or whose assertions are negative
+(`not.toHaveTextContent`, `assert x not in …`) — negative assertions go
+vacuous silently when the thing they name is reworded or removed.
+
 ## Status
 
-_Last reviewed: 2026-07-25, after adding the worktree post-dispatch
-verification and stalled-subagent diagnosis patterns above (from a
-subagent-driven-development session building a new item-type feature).
-Earlier note (repository bootstrap, 2026-07-01) about this file growing as
-concrete code patterns emerge in `src/` still applies — no `src/` patterns
-yet._
+_Last reviewed: 2026-07-27, after adding the discriminating-test pattern
+above (from a subagent-driven-development session building the last of five
+item types). Previously reviewed 2026-07-25, when the worktree
+post-dispatch verification and stalled-subagent diagnosis patterns were
+added. Earlier note (repository bootstrap, 2026-07-01) about this file
+growing as concrete code patterns emerge in `src/` still applies — no
+`src/` patterns yet._
