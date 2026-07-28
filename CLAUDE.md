@@ -96,6 +96,7 @@ Full detail lives in `docs/standards/`. Summary rules that apply regardless of l
 4. Every public function/module has a defined error contract (what it throws/returns on failure).
 5. Secrets, credentials, and tokens are never committed. Use environment variables and document required variables in `.env.example`.
 6. Dependencies are added deliberately — see `docs/standards/dependency-management.md` before adding any new package.
+7. A declared ARIA role obliges its whole contract — required properties, keyboard model, and focus management — or the role is not declared at all; see `docs/standards/accessibility.md` before adding any interactive control.
 
 ## 6. Documentation Standards
 

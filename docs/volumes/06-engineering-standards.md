@@ -38,6 +38,7 @@ this way and how to use it.
 | `docs/standards/scalability.md` | Designing for growth without premature complexity |
 | `docs/standards/reliability.md` | Failure handling, retries, graceful degradation |
 | `docs/standards/security.md` | Threat handling, secrets, dependency vetting |
+| `docs/standards/accessibility.md` | Role contracts, keyboard operability, verifying against the accessibility tree |
 
 ## Design Decisions
 
