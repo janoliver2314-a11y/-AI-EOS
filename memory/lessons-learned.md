@@ -1297,6 +1297,91 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   non-discriminating regression tests — the same family, where the evidence
   on hand cannot distinguish two live hypotheses.
 
+### LL-0033 — Per-task review cannot see an omission, because no task's diff contains it
+
+- **Root Cause**: A 13-task feature added a new item type to an app that
+  renders a human-readable badge for each type from a `TYPE_LABELS` map. No
+  task's brief mentioned that map, so no task touched it, so it appeared in
+  no task diff — and all thirteen task-scoped reviews passed. The new type
+  fell through to the raw enum string, rendering a lowercase `highlight`
+  badge beside properly title-cased siblings. Only the whole-branch review,
+  reading the feature as a unit rather than as a sequence of diffs, caught
+  it.
+- **Why It Happened**: A task-scoped review is defined by a diff, and a diff
+  is the wrong instrument for a *missing* edit. Reviewers were asked "does
+  this change do what its task says, and is it well built?" — both answered
+  correctly, and neither could answer "is there somewhere else this type
+  should have been registered?" The plan inherited the same blind spot: it
+  was written by enumerating the files the feature adds, which is exactly
+  the enumeration that omits a file nobody thought of. Registry-style code
+  (label maps, dispatch tables, type unions, factory switches) is where this
+  concentrates, because adding a variant obliges edits in places the
+  variant's own implementation never references.
+- **Solution**: The whole-branch review, handed the branch as one package
+  and asked explicitly about cross-task integration rather than per-task
+  correctness, found it in a single pass. Fixed in the final fix wave along
+  with the other accumulated findings rather than as its own dispatch.
+- **Preventive Rule**: Never let per-task reviews stand in for a broad pass
+  — they are structurally incapable of catching an omission, however many of
+  them pass. When adding a variant to an existing set (a new enum member,
+  item type, message kind, provider), grep for an existing sibling *by name*
+  across the whole tree before writing the plan, and treat every hit as a
+  candidate task; the sibling's name finds the registries the new variant's
+  own design never mentions. Give the final review the whole branch and ask
+  it specifically for cross-task integration and consistency with siblings,
+  not for a re-audit of what the task reviews already covered.
+- **Similar Situations**: A new enum variant missing from a `switch` with a
+  permissive `default`; a new locale absent from a language picker; a new
+  event type never registered with its dispatcher; a new model class not
+  imported into migration autogenerate metadata; a new feature flag missing
+  from the admin listing; DI containers, plugin registries, CLI subcommand
+  tables, serializer maps — and generally any change whose correctness
+  depends on a file the change itself gives no reason to open.
+
+### LL-0034 — An implementation plan's claims about the codebase are assertions, and four of thirteen were false
+
+- **Root Cause**: A plan written to be executed by fresh subagents embedded
+  factual claims about the existing tree — which files exist, what imports
+  what, what a fixture already provides. Four of its thirteen task briefs
+  were wrong: a Pydantic fixture omitted seven fields the model requires; a
+  claim that "nothing outside this module imports these three helpers" was
+  false; two test files the briefs told implementers to append to did not
+  exist at all; and one step mandated an edit that would have made the same
+  task's other half dead code. Every defect was caught by the implementer or
+  its task reviewer, so nothing shipped broken — but each cost a dispatch
+  cycle.
+- **Why It Happened**: The claims were produced while reading the codebase
+  and then never re-verified, so authoring confidence carried into the plan
+  as though it were evidence. The import claim is the instructive one: it
+  came from grepping two import-path spellings when a third was in use, and
+  a *negative* result from an incomplete search is indistinguishable from a
+  true absence. Negative claims are the ones a plan states most confidently
+  and verifies least, because nothing in the authoring flow forces a second
+  look. Compounding it, a subagent receives only its own brief, so a false
+  claim is authoritative to its reader — there is no surrounding context to
+  contradict it.
+- **Solution**: Implementers reported the discrepancies instead of coding
+  around them, and the controller verified each against the tree before
+  accepting the deviation. The false import claim was settled by grepping
+  the *symbol* rather than any path spelling; the missing test files by
+  listing the directory.
+- **Preventive Rule**: Treat every factual claim in a plan as a claim
+  requiring evidence, and verify them in one pass *before* the first
+  dispatch rather than lazily as each task reaches them. Verify negatives by
+  searching for the symbol or filename itself, never for one spelling of a
+  path that would reference it — "nothing imports X" and "file Y does not
+  exist" are the two highest-risk sentences a plan can contain. Where a
+  brief asserts that a fixture or helper already exists, name it and say
+  where, so the implementer fails fast instead of building on a phantom.
+  And tell implementers explicitly that the brief may be wrong and that
+  reporting a contradiction beats satisfying it.
+- **Similar Situations**: "This function has no other callers" before a
+  signature change; "this column is unused" before a migration; "no test
+  covers this" before a rewrite; a runbook citing a path that has moved; any
+  dead-code deletion justified by a single grep; and LL-0028's family more
+  broadly — evidence that cannot distinguish "absent" from "not looked for
+  properly."
+
 <!--
 Template for new entries — copy this block:
 
