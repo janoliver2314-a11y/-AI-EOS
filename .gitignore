@@ -1,0 +1,7 @@
+# macOS Finder metadata — created anywhere a folder is opened in Finder.
+.DS_Store
+
+# Ruflo / claude-flow local working state (swarm memory, session scratch).
+# Machine-local and regenerated on demand; nothing here is shared knowledge,
+# which is what this repo is for.
+.claude-flow/
