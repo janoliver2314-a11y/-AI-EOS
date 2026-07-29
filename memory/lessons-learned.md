@@ -1542,6 +1542,45 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   a local fixture; any destructive cleanup whose target list is computed from a
   different source of truth than the one being cleaned.
 
+---
+
+### LL-0039 — Deriving calendar dates via toISOString() is wrong east of UTC, and UTC-only tests can't see it
+
+- **Root Cause**: Date helpers (`todayStr`, `addDays`) in Task Command built a
+  Date at *local* midnight (`new Date("YYYY-MM-DDT00:00:00")`) and then
+  formatted it with `toISOString().split("T")[0]`, which formats in *UTC*. East
+  of Greenwich, local midnight is still the previous day in UTC, so in Naples
+  (UTC+2) `addDays(d, 1)` returned `d` and `addDays(d, 0)` returned the day
+  before. Every snooze, follow-up default, and recurrence was silently one day
+  early. Two schedulers compounded it: Vercel functions run in UTC and the n8n
+  container ran America/New_York, so the "0600 brief" fired at noon local.
+- **Why It Happened**: The mixed idiom (parse local, format UTC) looks
+  symmetrical and passes review. The dev machine and every test ran in UTC,
+  where local and UTC dates coincide and the bug is mathematically invisible.
+  The user's actual timezone was recorded in project memory but was never
+  treated as an input to code correctness — only as a scheduling fact.
+- **Solution**: Format calendar dates from local date fields
+  (`getFullYear`/`getMonth`/`getDate`), never `toISOString()`. Pin every
+  server-side "what day is it for the user" computation to an explicit IANA
+  zone held in one config point per host (env var on Vercel,
+  `settings.timezone` + a mirrored constant in the n8n Code node). Do pure
+  calendar *arithmetic* on `Date.UTC(...) + n * 86400000`, which is DST-free —
+  adding a day of milliseconds to a wall-clock instant loses an hour across
+  spring-forward and lands a day late.
+- **Preventive Rule**: Any code that produces a calendar date (`YYYY-MM-DD`)
+  must have tests that run it under multiple `TZ` values — at minimum UTC, one
+  zone east (`Europe/Rome` or `Pacific/Auckland`), one west
+  (`America/Los_Angeles`), and both DST switch days. A date-handling suite that
+  only runs in UTC proves nothing. Grep candidates: any
+  `toISOString().split('T')` or `toLocaleDateString()` without an explicit
+  `timeZone` option.
+- **Similar Situations**: Cron schedules in hosted runners (n8n, GitHub
+  Actions, Vercel cron) — the cron's firing zone and the job's own date math
+  are configured in *different places* and must be changed together; "due
+  today"/"overdue" predicates in any tracker; daily-rollup emails; date-range
+  filters passed to APIs; anything comparing a stored `YYYY-MM-DD` against
+  "now".
+
 <!--
 Template for new entries — copy this block:
 
