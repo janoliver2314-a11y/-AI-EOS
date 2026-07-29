@@ -1382,6 +1382,82 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   broadly — evidence that cannot distinguish "absent" from "not looked for
   properly."
 
+### LL-0035 — Dropping a superseded table armed a latent 500 in the fallback path that still read it
+
+- **Root Cause**: A legacy single-blob `tasks` table had been fully migrated
+  into a per-item `items` table and was being kept only as a rollback. The
+  migration helper that read it, `migrateLegacyBlob`, still ran on every
+  `GET /api/tasks/sync` where the user had **zero** items, and the shared
+  PostgREST helper throws on any non-OK response. Dropping the table would
+  therefore have converted "empty tracker" from an empty list into a hard 500
+  — not at drop time, but the first time anyone reached that branch.
+- **Why It Happened**: The table looked inert. Reconciliation proved every row
+  had migrated, which answers "is the data safe to delete?" but not "does
+  anything still read this?" — two different questions that feel like one. The
+  reader was also invisible to the obvious check: grepping for the table name
+  returned dozens of hits because `tasks` is the domain noun, so the single
+  real reference was buried in noise from variables, routes, and prose. And
+  the path is cold by construction — it only fires for a user with no rows, so
+  no amount of ordinary use would have surfaced it.
+- **Solution**: Found the reader before dropping, and shipped a guard *first*
+  that treats a missing relation as "nothing to migrate" — matching PostgREST's
+  `PGRST205` and Postgres' `42P01` specifically, not a bare 404 and not a
+  blanket catch. Two tests: one that a dropped table migrates nothing, one that
+  a 503 still propagates. Only then was the table dropped, and the external
+  check re-run to confirm the anon key still returned `[]`.
+- **Preventive Rule**: Before dropping or renaming a table, enumerate its
+  *readers*, not just its rows, and do it by searching for the access
+  expression — the query string, ORM call, or `from("x")` — rather than the
+  bare table name, which collides with the domain vocabulary. Pay particular
+  attention to fallback, migration, and first-run paths: they are cold, rarely
+  tested, and disproportionately likely to reference exactly the legacy thing
+  being removed. When guarding such a path, match the specific error code for
+  "this object no longer exists"; a catch-all disguises an outage as the benign
+  case, which is strictly worse than the crash it replaces.
+- **Similar Situations**: Deleting a feature flag whose default branch is the
+  cold one; removing a config key still read by an installer; dropping a column
+  a backfill job selects; retiring an endpoint a mobile client calls only on
+  first launch; deleting a seed file referenced only by a fresh-database path.
+  Related to LL-0034's negative claims — "nothing reads this" is exactly the
+  sentence stated most confidently and verified least.
+
+### LL-0036 — A backup that cannot be dumped mechanically must be proven against its source, not eyeballed
+
+- **Root Cause**: A rollback copy of a table was needed before an irreversible
+  drop, but there was no direct dump path available — no local credentials for
+  the database, and the query tool returned results into a transcript rather
+  than to a file. The backup therefore had to be reconstructed by hand from
+  query output, which is exactly the situation where a silently dropped record,
+  a mangled escape sequence, or a truncated long field produces a file that
+  looks complete and is not.
+- **Why It Happened**: Backups are treated as a checkbox before destructive
+  work — the act of producing one feels like the safety, so its *fidelity*
+  goes unexamined. The risk concentrates in the least readable fields
+  (embedded newlines, quoted URLs, unicode) which are the ones a human scan
+  skips, and record count matching gives false comfort because it is the one
+  property that survives most corruption.
+- **Solution**: Computed a per-record fingerprint on both sides over every
+  field — including hashes of the long free-text fields and an ordered digest
+  of nested arrays — then compared aggregate md5s. They matched, which proved
+  the transcription faithful before anything was dropped. The definition was
+  written to be reproducible in both SQL and the target language rather than
+  relying on either side's default serialization, since JSON key ordering and
+  whitespace differ between them.
+- **Preventive Rule**: Never let "a backup exists" stand in for "the backup is
+  correct" when the copy was produced by any means other than a mechanical
+  dump. Verify it against the live source with a content fingerprint that
+  covers every field, and define that fingerprint yourself from primitives —
+  do not compare serialized forms across two systems, because formatting
+  differences produce mismatches that look like corruption and send you
+  hunting a phantom. Record counts and spot checks are not verification.
+  Verify *before* the destructive step, while the source still exists to
+  compare against.
+- **Similar Situations**: Copying credentials or config between environments
+  by hand; reconstructing a fixture from log output; transcribing values from
+  a screenshot or PDF; any CSV round-trip through a spreadsheet, where type
+  coercion silently rewrites long numeric ids and dates; migrating data via
+  copy-paste because the export button is missing.
+
 <!--
 Template for new entries — copy this block:
 
