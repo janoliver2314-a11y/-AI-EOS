@@ -1458,6 +1458,90 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   coercion silently rewrites long numeric ids and dates; migrating data via
   copy-paste because the export button is missing.
 
+### LL-0037 — Mocking a client wrapper at every call site leaves the store's own configuration untested
+
+- **Root Cause**: A vector collection was created without payload indexes on
+  the two fields the application filters by. The engine rejects a filter on an
+  unindexed field outright (HTTP 400, "Index required but not found") rather
+  than degrading to a scan, so *every* filtered call had been failing since the
+  feature shipped. The unfiltered operations — write and similarity-search —
+  worked perfectly, which is why the feature demoed, shipped, and ran for days
+  looking healthy. The broken call was the delete-by-filter used to retract
+  content, i.e. the one path that only runs when a human has just decided the
+  content is wrong.
+- **Why It Happened**: Every test mocked the thin client wrapper's functions
+  wholesale, which is the sane way to test callers — but it means no test ever
+  produced a real request, so no test could observe that the store's schema
+  didn't support the query. The configuration was in nobody's diff: the
+  collection was created once, imperatively, by a setup call whose arguments
+  said nothing about indexes. The one operational script that touched the live
+  store happened to use only the two unfiltered operations. Catching this
+  needed a call that was both *real* and *filtered*, and nothing in the suite
+  or the tooling was both.
+- **Solution**: Moved index creation into the same `ensure_collection` step
+  every code path already calls, so any execution repairs the configuration.
+  Added a test that ties the set of indexed fields to a module-level constant
+  naming the fields the filters actually use — so adding a filter on a new
+  field fails in CI rather than in production.
+- **Preventive Rule**: When a thin client wrapper is mocked at every call site,
+  the external store's configuration is untested *by construction* — assert the
+  configuration itself. Make the idempotent setup step create everything the
+  queries need (indexes, constraints, permissions), and pin "what we filter on"
+  to "what we index" in a test. A mock will never tell you the two disagree.
+  Corollary: treat "reads fine, writes fine" as covering a strict subset of the
+  API — the operations that only fire on rare paths (retraction, deletion,
+  rollback) are exactly the ones no happy path exercises.
+- **Similar Situations**: A missing database index that only breaks a rarely-hit
+  query plan; an object-storage bucket lacking a lifecycle or CORS rule used by
+  one endpoint; a search index missing a facet field; a message queue without
+  the dead-letter binding the error path publishes to; any IAM permission needed
+  only by a cleanup job. Also: any store whose setup is imperative and one-time
+  rather than declarative and re-applied.
+
+### LL-0038 — A finding that confirms the bug you just diagnosed deserves more scrutiny, not less
+
+- **Root Cause**: Two services were configured from independent environment
+  variables that, in a normal development shell, point at *different
+  environments*: the database URL at the local stack, the vector store URL at
+  the cloud instance (no local instance of it exists). An operational script
+  read content from one and wrote to the other, so it took **local** state as
+  truth and applied it to **production**. The specific column it filtered on —
+  review/publication status — is precisely the column known to drift between
+  local and cloud, because reviews happen against the deployed app and revert
+  locally on any database reset.
+- **Why It Happened**: This was found immediately after diagnosing a real bug
+  whose predicted symptom was "unreviewed content sitting in the production
+  index." Local then reported exactly that. The finding *fit the freshly-built
+  model perfectly*, so it read as confirmation rather than as a claim needing
+  its own check — and the content was deleted from production. Cloud had it
+  published; it was legitimate. The single question that would have caught it,
+  "which database am I actually reading?", went unasked **because** the story
+  already hung together. Confirmation bias is at its strongest right after a
+  correct diagnosis, when a new fact slots neatly into a model that just proved
+  itself.
+- **Solution**: Restored the deleted content from the authoritative (cloud)
+  row. Verified the blast radius rather than assuming it: hashed the same field
+  across both databases for every affected row and confirmed they matched
+  everywhere except the one genuinely-drifted record. Added a guard the
+  operational scripts call before reading anything — it prints both endpoints
+  and exits on a local-source/production-target mismatch unless an explicit
+  `--allow-local-source` flag is passed. Corrected the already-pushed commit
+  message and lessons entry additively rather than rewriting history.
+- **Preventive Rule**: Before a script that mutates production reads anything,
+  make it state which environment *each* endpoint points at, and refuse a
+  mismatch by default. Two independently-configured services are two
+  independent chances to be in the wrong environment, and the failure is silent
+  because both connections succeed. Separately, and more generally: when a new
+  finding confirms the theory you just formed, that is the moment to verify its
+  provenance, not to act on it. Treat "this is exactly what I predicted" as a
+  prompt to ask what else could produce the same observation.
+- **Similar Situations**: Any script pairing a database read with a cache,
+  search index, queue, or object-store write; running a migration against
+  staging data but production schema; a feature-flag service pointed at one
+  environment while the app points at another; seeding a production system from
+  a local fixture; any destructive cleanup whose target list is computed from a
+  different source of truth than the one being cleaned.
+
 <!--
 Template for new entries — copy this block:
 
