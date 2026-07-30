@@ -1581,6 +1581,59 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   filters passed to APIs; anything comparing a stored `YYYY-MM-DD` against
   "now".
 
+### LL-0040 — Auth middleware matchers exclude by file extension, so extensionless well-known routes get gated and break silently
+
+- **Root Cause**: A Clerk/Next middleware matcher excluded static assets by
+  extension (`...\.(?:png|svg|ico|css|js|woff2?)...`) and protected everything
+  else. Framework-generated well-known routes have no extension —
+  `/manifest.webmanifest` matched no exclusion, and a generated OG image
+  serves from `/opengraph-image?<hash>` — so both were treated as app pages
+  and redirected to sign-in.
+- **Why It Happened**: The consumers of those routes are never signed in and
+  never complain: an OS install prompt and a link-preview crawler. Every human
+  test passes, because a developer testing the site is authenticated — the
+  feature is broken *only* for the audience it exists for. Extension-based
+  exclusion silently encodes "assets have extensions", which stopped being
+  true once frameworks began generating manifests and social images as routes.
+- **Solution**: Add the extensionless public routes to the middleware's public
+  list explicitly (`/manifest.webmanifest`, `/opengraph-image(.*)`), and verify
+  unauthenticated with
+  `curl -o /dev/null -w "%{http_code} %{content_type}"` — a browser check by a
+  logged-in developer proves nothing here.
+- **Preventive Rule**: After adding any framework-generated metadata route
+  (manifest, `opengraph-image`, `robots.txt`, `sitemap.xml`, `.well-known/*`,
+  RSS), curl it **with no cookies** and assert both status and content type.
+  If the app has auth middleware, assume the route is gated until proven
+  otherwise.
+- **Similar Situations**: Health-check and webhook endpoints behind auth
+  middleware; `.well-known/apple-app-site-association` and `assetlinks.json`
+  (deep links fail with no error surface); Stripe/GitHub webhook receivers;
+  anything an unauthenticated *machine* fetches.
+
+### LL-0041 — A gated affordance must state its gate where the user already looks, not in a hover tooltip
+
+- **Root Cause**: A milestone chip ("80% accuracy") stayed muted for a user
+  holding 85% accuracy, because the rule also required a 50-graded-answer
+  floor he had not reached. That requirement existed only in a native `title`
+  tooltip.
+- **Why It Happened**: The tooltip felt like sufficient disclosure at
+  authoring time. It isn't: `title` needs a long motionless hover on desktop
+  and never fires on touch, so in practice the rule was invisible. A
+  correctly-gated element whose gate cannot be seen is indistinguishable from
+  a broken one — and the user's first hypothesis is "bug", not "unmet
+  requirement", which burns their trust and your debugging time.
+- **Solution**: Render progress inline on the element itself ("13/50 graded"),
+  and when several conditions gate it, show *whichever one is actually
+  blocking* — telling a user at 85% that they need 80% accuracy is worse than
+  saying nothing. Keep the tooltip as a bonus channel, never the only one.
+- **Preventive Rule**: Any disabled/locked/muted UI state must make its unlock
+  condition visible without hover, focus, or a click. If the state is computed
+  from more than one threshold, the visible text names the binding one.
+- **Similar Situations**: Disabled submit buttons ("why can't I continue?");
+  greyed-out menu items; rate-limited actions; feature flags and plan gates;
+  form fields whose validation rule only appears on error; anything with a
+  `title` attribute doing load-bearing explanatory work.
+
 <!--
 Template for new entries — copy this block:
 
