@@ -1634,6 +1634,43 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   form fields whose validation rule only appears on error; anything with a
   `title` attribute doing load-bearing explanatory work.
 
+### LL-0042 — A round-trip through your own decoder cannot validate an encoder whose real consumer is someone else's parser
+
+- **Root Cause**: Task Command RFC 2231-encoded MIME attachment filenames with
+  `encodeURIComponent`, which leaves `'`, `(`, `)` and `*` unescaped. `'` is the
+  delimiter in `charset'language'value`, so `città's report.pdf` ended its own
+  `filename*=` parameter early and would arrive truncated in the recipient's
+  client. Two assertions looked like coverage and neither could fail: one
+  checked only that the output contained the prefix `filename*=UTF-8''`, and the
+  other asserted `decodeURIComponent(value) === original`, which passes on the
+  broken output too.
+- **Why It Happened**: Both assertions tested the producer against itself. A
+  round-trip pairs an encoder with its own matching decoder, so any character
+  the pair silently agrees to leave alone is invisible to it — the check is
+  symmetric in precisely the way the bug is. `decodeURIComponent` is lenient
+  about characters RFC 5987 forbids; the actual consumer, a mail client's RFC
+  2231 parser, is not. The prefix check compounds it by confirming the *shape*
+  of the output while asserting nothing about its content.
+- **Solution**: Assert the full encoded value against a literal expected string
+  (`citt%C3%A0%27s%20report.pdf`); keep the round-trip only as a secondary
+  check; add a negative assertion that the delimiter cannot appear raw in the
+  value; and assert that characters the spec *does* permit (`!` and `~` are
+  attr-char) are still left alone, so the fix isn't over-escaping. Discriminated
+  per LL-0028 by neutering only the escape in place — strict equality failed and
+  the round-trip stayed green, which is the whole lesson in a single run.
+- **Preventive Rule**: When testing an encoder whose consumer is an external
+  parser — MIME headers, URLs, CSV, shell quoting, SQL identifiers, JSON
+  embedded in HTML — assert the literal encoded output against the spec's
+  grammar. Never let a round-trip through your own decoder be the primary
+  assertion: it proves a closed loop, not conformance. Add a negative assertion
+  naming the delimiter or metacharacter that must never survive raw, and treat
+  `.includes(prefix)` on encoder output as no coverage at all.
+- **Similar Situations**: Shell argument quoting verified by re-splitting with
+  the same splitter; CSV escaping read back with the same library; SQL
+  identifier quoting; HTML/JS escaping checked with a lenient parser; base64url
+  vs standard base64 where one alphabet is invalid downstream; any
+  `encodeURIComponent` used for something that is not a URI component.
+
 <!--
 Template for new entries — copy this block:
 
