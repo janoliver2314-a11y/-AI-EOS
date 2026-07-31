@@ -41,7 +41,18 @@ configuration changes are exempt unless they affect runtime behavior.
    network calls to live services, or unseeded randomness in unit tests.
 6. **Flaky tests are fixed or removed**, never silently ignored/retried
    into passing.
-7. **An inconclusive verification result is a finding, not a gap** —
+7. **An encoder is verified against its consumer's grammar, never against
+   your own decoder.** A round-trip (`decode(encode(x)) === x`) pairs an
+   encoder with a decoder that is lenient about precisely the characters the
+   encoder got wrong, so it passes on output the real consumer will truncate
+   or reject. Assert the literal encoded value against the spec's grammar,
+   add a negative assertion for the delimiter or metacharacter that must
+   never survive raw, and assert that characters the spec *does* permit are
+   left alone so the fix does not over-escape. A prefix or `includes()`
+   check on encoder output is not coverage. Applies to MIME headers, URLs,
+   CSV, shell quoting, SQL identifiers, and escaping into HTML or JSON
+   (`memory/lessons-learned.md` LL-0042).
+8. **An inconclusive verification result is a finding, not a gap** —
    attributing it to the tooling is a hypothesis that needs evidence like
    any other. Where an observation fits both a harness artifact and a
    product defect, hold the procedure fixed and vary the implementation
@@ -87,6 +98,10 @@ describe("webhook signature verification", () => {
 - Adding `skip`/`todo` tests that are never revisited.
 - Asserting on incidental implementation detail (internal call counts,
   private state) instead of observable behavior.
+- Verifying an encoder by round-tripping it through your own decoder, or by
+  asserting a prefix of its output — both stay green on a value the real
+  consumer will reject, because your decoder and your encoder share the same
+  blind spot.
 - Recording an inconclusive observation as an environment limitation
   without testing that attribution — a harness artifact and a real defect
   look identical until you deliberately discriminate them, and a working
