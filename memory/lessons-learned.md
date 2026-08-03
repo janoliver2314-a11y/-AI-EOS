@@ -1707,6 +1707,88 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   checked before "the cert actually issued and the handshake completes"; any
   config split across two admin consoles with no single source of truth.
 
+---
+
+### LL-0044 — A review-state backfill must replay every field the real review flow sets, not just the status column
+
+- **Root Cause**: A `seed.sql` backfill block persisted a batch of
+  AI-generated content's `clinical_review → published` transition (so a
+  local `db reset` wouldn't revert review state that only exists on the
+  deployed/cloud database) by copying the `current_stage` column change
+  directly. It did not also replay the side effect the real review UI
+  performs when publishing: flipping each evidence citation's `verified`
+  flag from `false` to `true`. A DB-level publish-readiness trigger required
+  at least one verified reference before `current_stage` could become
+  `published`, so the backfill's own `UPDATE` failed its own gate — breaking
+  `supabase db reset` for the whole project from that commit onward, silently,
+  because nobody happened to run a full reset again until a later session.
+- **Why It Happened**: The backfill was written by reasoning about "what
+  changed" (a status field) rather than "everything the real action does."
+  A status transition driven by a UI action is rarely just one column;
+  replaying only the visible field misses the invariants the real action
+  also satisfies, invariants a DB trigger can then enforce and reject.
+- **Solution**: Query the source of truth (the deployed/cloud database,
+  where the real action executed) for the *actual* resulting row shape,
+  not just the field being backfilled, then compose the backfill's SQL from
+  that. Verify the backfill by running the exact reset/replay procedure end
+  to end (`db reset`, not a row-count spot check) before trusting it.
+- **Preventive Rule**: Any script or migration that persists a state
+  transition normally driven by application logic (a review approval, a
+  publish action, a status flip enforced by a DB trigger/constraint) must
+  replay every side effect that transition performs, not only the field
+  being backfilled — and must be verified by actually re-running the
+  process that would expose a missing side effect (a full environment
+  reset/rebuild), not by checking the row count or the one field you
+  intended to change.
+- **Similar Situations**: Any "persist reviewed/approved state so a reset
+  doesn't lose it" backfill in a system with DB-level readiness gates,
+  soft-delete/audit trail side effects, or multi-column state machines;
+  any migration that mimics an application-level action from outside the
+  application.
+
+### LL-0045 — An unpaginated `.select()` against a growing table silently truncates once it crosses the API's default row cap
+
+- **Root Cause**: A production code path (and its test-suite equivalent)
+  fetched "all rows matching a filter" from a Postgres table via
+  PostgREST/Supabase's Python client with a single `.select().execute()`
+  call and no `.range()`/pagination. PostgREST defaults to capping
+  unbounded selects at 1000 rows. The table in question started well under
+  that limit, so the code worked correctly for months; once a content-growth
+  operation pushed the filtered row count past 1000, the call started
+  silently returning only the first 1000 rows with no error — for
+  production code, that meant a personalization feature quietly lost access
+  to the newest ~5% of its data pool for every user who exercised that code
+  path.
+- **Why It Happened**: The code was correct when written and stayed
+  correct for a long time, so nothing about it looked wrong in review; the
+  bug is purely a function of data volume crossing an implicit, undocumented
+  (from the call site's perspective) threshold, which nothing in the code
+  or its tests encoded as an assumption to watch. The test suite's own
+  helper had the identical unpaginated-select bug, so it silently
+  undercounted the expected total right alongside the real bug and never
+  caught it — two independent instances of the same shortcut cancelling
+  each other's symptom out. It also went unnoticed for a stretch because
+  the local dev-environment reset was independently broken (see LL-0044),
+  so nobody re-ran the test suite against fresh data in between.
+- **Solution**: Paginated the fetch with `.range(start, start + PAGE - 1)`
+  in a loop until a page returns fewer than `PAGE` rows, in both the
+  production function and the test helper that was masking it.
+- **Preventive Rule**: Any `.select()` (via PostgREST/Supabase or any other
+  API with a default response-size cap) that is meant to return "every row
+  matching a filter" — not a bounded/paged UI query — must paginate
+  explicitly, even when today's row count is comfortably under the cap.
+  When a table's row count crosses a round-number threshold (1000, 10000)
+  as part of a content-growth or migration task, treat that as a trigger to
+  grep the codebase for unpaginated selects against that table before
+  declaring the task done, not just to run the existing test suite (which
+  can have the same blind spot, as it did here).
+- **Similar Situations**: Any "fetch all X" helper against a table expected
+  to grow — user lists, content banks, audit logs, notification queues —
+  built against any API with an implicit page-size default (PostgREST,
+  most REST APIs with a default `limit`, GraphQL connections with a default
+  `first`). Test helpers that mirror production query shapes are exactly as
+  likely to carry the same latent bug as the production code.
+
 <!--
 Template for new entries — copy this block:
 
