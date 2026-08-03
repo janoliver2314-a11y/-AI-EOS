@@ -1671,6 +1671,42 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   vs standard base64 where one alphabet is invalid downstream; any
   `encodeURIComponent` used for something that is not a URI component.
 
+### LL-0043 — Config that reads correctly in every dashboard can still be broken; only the live end-to-end flow proves it
+
+- **Root Cause**: Cutting an auth provider over to a production domain (custom
+  domain + live keys) looked complete after checking every config screen — DNS
+  records verified, TLS issued, env vars updated and redeployed. Two real
+  breaks were invisible from that review. (1) Social sign-in failed with
+  "Missing required parameter: client_id" because the provider's production
+  tier requires the developer's own OAuth client, while its dev tier silently
+  uses the vendor's shared test credentials — nothing in the dashboard flags
+  this until sign-in is actually attempted. (2) The backend's CORS allowlist
+  was never actually updated to the new frontend origin (an edit made earlier
+  in the session had been lost/skipped), so every post-sign-in API call failed
+  with a generic browser "Failed to fetch" — no error surfaced in either
+  system's own logs, because CORS rejection happens silently at the
+  browser/network layer.
+- **Why It Happened**: Both gaps live at the *seam* between two independently
+  configured systems (IdP↔OAuth provider, frontend origin↔backend CORS), where
+  each side's own dashboard shows a state that is locally valid but proves
+  nothing about whether the seam actually works. Config review is a checklist
+  over what you can see; an integration only reveals itself by running.
+- **Solution**: After any multi-system cutover (auth provider, domain
+  migration, API/CORS boundary), drive the real user path in a browser — sign
+  in, load a page that requires the new integration, check the network tab and
+  console for errors — before declaring it done. Config screens are a
+  necessary check, not a sufficient one.
+- **Preventive Rule**: A cutover that changes how two independently configured
+  systems talk to each other (OAuth provider ↔ IdP, frontend origin ↔ backend
+  CORS, webhook URL ↔ receiver, DNS ↔ TLS cert) is not verified until the
+  actual cross-system call has been exercised live, not just inspected in each
+  system's own dashboard.
+- **Similar Situations**: Any OAuth/SSO provider cutover between dev and prod
+  tiers; CORS/allowed-origins lists after a domain change; webhook endpoint
+  URLs after a redeploy; DNS cutovers where "the record looks right" is
+  checked before "the cert actually issued and the handshake completes"; any
+  config split across two admin consoles with no single source of truth.
+
 <!--
 Template for new entries — copy this block:
 

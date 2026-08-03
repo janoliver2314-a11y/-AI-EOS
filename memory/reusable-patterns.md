@@ -190,12 +190,80 @@ fixtures are symmetric or whose assertions are negative
 (`not.toHaveTextContent`, `assert x not in …`) — negative assertions go
 vacuous silently when the thing they name is reworded or removed.
 
+## Pattern: Credential handoff when Claude Code can't paste secrets itself
+
+**Used in**: a Clerk + Google OAuth production cutover, where a secret key, an
+OAuth client ID/secret pair, and even a `{"role": "reviewer"}` metadata JSON
+blob all needed entering into third-party dashboards.
+
+**Shape**: Claude Code is policy-blocked from typing or pasting any
+credential-shaped value into a field — not just obvious secrets (API keys,
+passwords) but anything a permission classifier reads as credential- or
+permission-adjacent, including a bare JSON object like
+`{"role": "reviewer"}`. The reliable handoff:
+1. Claude finds/reveals the value at its source (e.g. clicks a dashboard's own
+   "copy" button) and copies it to the clipboard — this is a *read*, not an
+   *entry*, and is fine.
+2. Claude tells the user exactly which field is open and focused, and that
+   the value is on the clipboard.
+3. The user pastes and saves. Claude does not touch the keyboard for that
+   field, ever, including on its own attempt to "just try" — that attempt
+   will be denied by the classifier anyway.
+4. Claude verifies success via a side-channel signal (the row's "last
+   updated" timestamp, a live end-to-end check downstream) — never by
+   re-reading the secret itself.
+
+**The gotcha this pattern guards against**: if Claude performs *any other
+clipboard-copy action* between step 1 and the user's paste in step 3 —
+including an incidental click that happens to copy an unrelated field's
+value — the clipboard is silently overwritten and the user pastes the wrong
+thing with no error surfaced anywhere. This happened once: an incidental
+click on an old field's row copied its stale value over a freshly-copied
+secret, and the mistake was only caught afterward by comparing "last
+updated" timestamps across the two related fields. **Once a secret is on the
+clipboard for a user to paste, do not perform any further clipboard-writing
+action until the paste is confirmed.**
+
+**When to use**: any task that involves entering an API key, secret, OAuth
+credential, or any field a permission classifier might treat as
+credential-adjacent (this can include role/permission JSON, not just literal
+tokens) into a third-party dashboard on the user's behalf.
+
+## Pattern: When a full verification would relay an infeasible amount of data through tool calls, ask the user instead of forcing it
+
+**Used in**: verifying that 200 rows of cloud-published content matched a
+local seed file byte-for-byte, to detect any reviewer edits made during a
+manual review pass.
+
+**Shape**: The established method for this class of check (proven at 30-row
+scale in an earlier session) was to compute a content hash locally and
+cloud-side and compare them. At 200 rows the local content was >1MB of SQL
+text — relaying that through a tool-call parameter to a remote SQL executor
+(no direct DB connection available) would have meant generating that entire
+payload as model output: impractical and wasteful. Rather than attempting a
+degraded version of the check (hash only a few fields and hope nothing else
+changed) or silently skipping verification, the resolution was to ask the
+user directly: "did you edit any content during this review pass?" One
+direct question replaced an infeasible mechanical verification, and was
+strictly more reliable than a partial hash check would have been.
+
+**When to use**: any verification task where the thorough/mechanical
+approach scales past what a single tool call or the current context budget
+can carry, *and* the fact being verified is something the user directly
+knows (did you edit X, did you change Y). Prefer asking over silently
+degrading or skipping the check. Not a substitute for verification when the
+user might not know the answer — "is the cloud data internally consistent"
+is not something to just ask about — it applies specifically when the user
+is the authoritative source for the fact in question.
+
 ## Status
 
-_Last reviewed: 2026-07-27, after adding the discriminating-test pattern
-above (from a subagent-driven-development session building the last of five
-item types). Previously reviewed 2026-07-25, when the worktree
-post-dispatch verification and stalled-subagent diagnosis patterns were
-added. Earlier note (repository bootstrap, 2026-07-01) about this file
-growing as concrete code patterns emerge in `src/` still applies — no
-`src/` patterns yet._
+_Last reviewed: 2026-08-03, after adding the credential-handoff and
+ask-before-relaying-infeasible-data patterns (from a domain/Clerk production
+cutover session that also closed out a 200-item bank review). Previously
+reviewed 2026-07-27, when the discriminating-test pattern was added (from a
+subagent-driven-development session building the last of five item types).
+Earlier: 2026-07-25 (worktree post-dispatch verification, stalled-subagent
+diagnosis) and 2026-07-01 (repository bootstrap) — the bootstrap note about
+this file growing as concrete code patterns emerge in `src/` still applies,
+no `src/` patterns yet._
