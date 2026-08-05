@@ -1789,6 +1789,58 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   `first`). Test helpers that mirror production query shapes are exactly as
   likely to carry the same latent bug as the production code.
 
+### LL-0046 — An AI provider's default terms often claim a training licence on customer content, and the opt-out is gated behind a paid account
+
+- **Root Cause**: A published privacy policy stated that user content was
+  not used to train AI models and that no provider was permitted to do so
+  on the operator's behalf. The claim was written from the operator's own
+  intent and from familiarity with one provider's terms, not from reading
+  each provider's terms. One provider in the chain — an embedding API that
+  received the user's raw typed question on every request — granted itself,
+  by default, "a worldwide, irrevocable, perpetual, royalty-free,
+  fully paid-up right and licence to … train, improve, and otherwise
+  further develop the Service" on customer content. Opting out was
+  possible, but required a payment method on file, and the project was on
+  the provider's free tier. The published claim was therefore false from
+  the day it went live.
+- **Why It Happened**: The best-known provider in the stack (Anthropic)
+  bars training on API inputs in its commercial terms, which makes
+  "providers don't train on API data" feel like an industry norm rather
+  than a per-vendor fact. Embedding and other "utility" providers attract
+  far less scrutiny than the model that visibly generates output, even
+  though they receive the same raw user text. The free tier compounds it:
+  the cheapest plan is often the one with the broadest data-use grant, and
+  the opt-out is a paid-account feature, so the projects least able to
+  afford review are the most exposed.
+- **Solution**: Read each provider's current terms before publishing any
+  data-use claim; traced what is actually transmitted to each provider at
+  the call site rather than trusting the architecture diagram; corrected
+  the policy to describe only the operator's own conduct until the opt-out
+  was exercised; and made the corrected claim name each provider and the
+  specific mechanism, so it is checkable rather than atmospheric.
+- **Preventive Rule**: A privacy or marketing claim about what third
+  parties do with user data is a claim about their contracts, not about
+  your intentions, and must be sourced to their current terms with the
+  effective date recorded. Before publishing "we don't train on your data",
+  enumerate every service that receives user-derived content — including
+  embedding, search, logging, analytics, error-reporting, and support-desk
+  vendors — and check each one's default data-use grant and whether its
+  opt-out has a plan or payment prerequisite. Where a claim cannot be
+  sourced, narrow it to your own conduct ("we do not authorise…") or
+  disclose the exception; never let the absolute version ship because the
+  narrow version reads weaker. Re-check on any provider or plan change,
+  and treat "free tier" as a signal to read the data-use clause first.
+- **Similar Situations**: Any user-facing claim that depends on a third
+  party's behaviour rather than your own code — subprocessor lists,
+  "we never sell your data", data-residency and regional-processing
+  statements, retention periods that a vendor actually controls, security
+  certifications inherited from a host, and uptime or deletion guarantees
+  passed through from an upstream service. The same plan-gating trap
+  appears wherever a compliance control is a paid feature: DPAs that bind
+  only on Pro/Enterprise tiers, audit logs, SSO, zero-retention modes, and
+  regional pinning. Checking one vendor and generalising to the rest is the
+  failure mode in every case.
+
 <!--
 Template for new entries — copy this block:
 
