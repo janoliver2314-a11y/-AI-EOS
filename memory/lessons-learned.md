@@ -1841,6 +1841,103 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   regional pinning. Checking one vendor and generalising to the rest is the
   failure mode in every case.
 
+### LL-0047 — An agent told to copy data verbatim can paraphrase it instead, and every structural check will pass
+
+- **Root Cause**: A purely mechanical data-movement step — execute ~20
+  pre-generated SQL `INSERT` statements verbatim against a database — was
+  delegated to an LLM subagent whose prompt explicitly said to paste each
+  statement exactly and not modify it. The agent altered one word of the
+  payload anyway: a content string that read "noisy room" in the source file
+  arrived in the database as "loud room". A semantically equivalent, "nicer"
+  synonym, in one field of one row out of hundreds. The agent reported success
+  and its own self-verification passed.
+- **Why It Happened**: Every guard the pipeline had was a *structural* guard,
+  and this defect is not structural. Row counts, per-group distribution,
+  schema/key-parity audits, orphan-reference checks, database constraint
+  triggers and JSON validity all passed, because the paraphrase is still
+  grammatical English, still valid SQL, and still satisfies every constraint.
+  The unstated assumption underneath the whole method was that **a bad copy
+  fails loudly** — a mangled statement won't parse, which localizes the error
+  for free. That holds for corruption and truncation. It does not hold for an
+  LLM, whose characteristic failure mode is not mangling the text but
+  *improving* it. A semantically valid paraphrase is invisible to every check
+  that isn't comparing bytes, including a human reading the result, who sees
+  a sentence that reads perfectly well.
+- **Solution**: Detected by hashing **each content column separately** on both
+  sides and comparing, rather than one whole-row or whole-table hash:
+
+  ```sql
+  select 'col_a', md5(string_agg(id||chr(1)||col_a::text, chr(2) order by id)) from t
+  union all select 'col_b', md5(string_agg(id||chr(1)||col_b::text, chr(2) order by id)) from t
+  -- ...one row per content column
+  ```
+
+  Per-column is what makes it debuggable: six of seven columns matched
+  byte-for-byte immediately, isolating the defect to one column, after which
+  bisecting (group → numeric bucket → row) localized the exact row in about
+  six queries total, without ever pulling the content itself into context.
+- **Preventive Rule**: When a step is *mechanical* — move these bytes from A to
+  B unchanged — do not make the agent the transport. Have the agent write and
+  run a script that moves the bytes, so the content passes through code rather
+  than through a model's context. In the same session, an agent that streamed
+  rows to a file via a script it wrote introduced zero drift, while the agent
+  acting as the transport itself corrupted a word. Where an agent must be the
+  transport, the completion check is a byte-level comparison (per-column
+  hashes, `diff`, checksums) run after every load — a row count, a structural
+  audit, and the agent's own self-report are all compatible with corrupted
+  content and prove nothing about fidelity.
+
+  Generalized: **the checks that pass are rarely the checks that matter.** Ask
+  what layer the data has to survive — bytes, schema, serialization, the
+  consumer — and verify at *that* layer. The corollaries below are two failures
+  of the same shape, one caught by hashing bytes, one that should have been
+  caught by instantiating the API's own model.
+- **Similar Situations**: Any agent-mediated copy where the payload is
+  human-readable prose and therefore paraphrasable — seeding or migrating
+  content between environments, transcribing config or credentials between
+  files, "just reformat this" edits, translating a fixture into another
+  format, filling a template from a source document, or relaying a quoted
+  message. The risk rises exactly where the content reads like natural
+  language and falls where it is opaque (hashes, ids, base64), because there
+  is nothing for the model to want to improve.
+
+  **Corollary — when two copies disagree, don't assume which is authoritative.**
+  Look for an edit or audit record to decide the direction of the fix. In this
+  incident the same diff contained one divergence caused by agent corruption
+  (source authoritative, correct the destination) and a second, opposite one:
+  a genuine human edit made in the application UI that had never been
+  persisted back to the source file, so every environment reset silently
+  reverted it (destination authoritative, back-port to source). An audit
+  trail — a `*_versions` table, `updated_at`/actor columns, application logs —
+  distinguishes the two; guessing a direction repairs one row and destroys
+  another.
+
+  **Corollary — validity at the storage layer is not validity at the serving
+  layer, and a list endpoint fails atomically.** Same session, same batch, a
+  second "every check passed" defect with a different root cause. The agents
+  drafting the batch wrote `"year": ""` for citations whose year they could not
+  source. The column was untyped (`jsonb`), so the database stored it without
+  complaint and *every* guard passed again — schema validation, key-parity
+  audits, reference-integrity checks, and two separate constraint triggers. But
+  the API's response model declared that field `int | None`, and the serializer
+  could not coerce `""` to an integer. Nothing failed at write time; the defect
+  surfaced only when a row was first *served* — and because the endpoint
+  serializes a list, **16 bad values across 12 rows returned a 500 for all 200
+  rows**, denying the human reviewer access to the entire queue.
+
+  Two rules fall out. First: when data must survive a round trip through an API,
+  validate it against **the model that will serialize it**, not only against the
+  table it is written to — instantiate the response type over the loaded rows as
+  the completion check. Untyped columns (`jsonb`, `json`, text blobs, schemaless
+  documents) are precisely where the storage contract and the API contract
+  silently diverge, because the database has agreed to enforce nothing. Second:
+  weigh blast radius when a defect lands in a collection endpoint — one
+  malformed row does not degrade one item, it takes down every item served
+  alongside it, so "only 12 of 200 rows are affected" badly understates the
+  impact. Read the production error trace before theorizing; it named the exact
+  field path and route in one line, after size and pagination hypotheses had
+  already been raised and would have wasted the investigation.
+
 <!--
 Template for new entries — copy this block:
 
