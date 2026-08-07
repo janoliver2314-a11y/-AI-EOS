@@ -1938,6 +1938,67 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   field path and route in one line, after size and pagination hypotheses had
   already been raised and would have wasted the investigation.
 
+### LL-0048 — Over-escaping a quote inside a nested literal corrupts the stored text, and only a byte comparison sees it
+
+- **Root Cause**: Patching a `jsonb` column through a database API by sending a
+  JSON object literal nested inside a single-quoted SQL string. An apostrophe
+  in the *content* needs exactly one level of SQL escaping (`''`); the escaping
+  was applied twice (`''''`), once for the SQL literal and once again "for the
+  JSON". JSON has no apostrophe escaping at all, so the second doubling was
+  not neutralised by anything — it became literal characters. `"Broca''''s"`
+  in the statement stored the text `Broca''s` in the database. The identical
+  sentence written directly into a `.sql` seed file was correct, because there
+  it sat in only one escaping context, so the file and the remote database
+  silently disagreed on the content of two fields.
+- **Why It Happened**: The same content was hand-authored twice, in two
+  different quoting contexts, and only one of those contexts escapes
+  apostrophes. Nested-delimiter bugs normally announce themselves by failing to
+  parse, which trains the reflex that "extra escaping is the safe direction."
+  That reflex is exactly wrong here: over-escaping produces output that is
+  valid at *every* layer — valid SQL, valid JSON, valid UTF-8, grammatical
+  English — and so passes silently. Every downstream guard was a structural
+  guard and all of them passed: the JSON parsed, cross-references between JSON
+  objects resolved, a referential-integrity helper was satisfied, the row count
+  was right, and the row validated cleanly through its Pydantic response model.
+  Model validation in particular is seductive and proves nothing here — it
+  checks shape, not characters.
+- **Solution**: Caught by hashing each content column separately on both sides
+  and comparing (the LL-0047 method). Once the hash mismatch localised it to
+  one column, a direct scan named the defect immediately rather than requiring
+  a bisect:
+
+  ```sql
+  select id from t where col like '%''''%'          -- doubled apostrophe
+     or other_col::text like '%''''%';
+  ```
+
+  The write was re-applied with correct escaping, re-hashed to confirm
+  agreement, and every sibling row was scanned for the same pattern. The
+  workflow was then changed so the content exists in **one** authored form: edit
+  the `.sql` file, rebuild the local database from it, and hash-compare local
+  against remote. That turns the comparison into a proof that the file and the
+  remote agree, instead of a comparison between two independently hand-authored
+  statements that can both be wrong.
+- **Preventive Rule**: Never author the same content twice in two escaping
+  contexts — generate the second form from the first, or make the file the only
+  source and load from it. Where a hand-authored write into a nested literal is
+  unavoidable, pair the per-column hash comparison with an explicit
+  doubled-delimiter scan (`like '%''''%'` and the equivalent for whichever
+  delimiter is nested); the hash tells you *that* something differs, the scan
+  tells you *what*, which is the difference between a six-query bisect and a
+  one-query answer. Never treat schema validation, JSON parse success, or
+  successful response-model instantiation as evidence of content fidelity.
+- **Similar Situations**: Any nested quoting context — JSON inside SQL, SQL
+  inside a shell command, a regex inside JSON, YAML inside a heredoc, a quoted
+  field inside CSV, or anything passed through a templating layer into a
+  string literal. Note this is a genuinely different cause from LL-0047 and its
+  preventive rule does not cover this case: LL-0047 says to have a script move
+  the bytes rather than an agent, but here the corruption was already baked
+  into the hand-authored statement, so a script would have faithfully
+  transported the wrong bytes. The two entries share only a detection method —
+  per-column byte comparison — which is what makes that method worth running
+  after *every* content write, regardless of how the content got there.
+
 <!--
 Template for new entries — copy this block:
 
