@@ -1999,6 +1999,54 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   per-column byte comparison — which is what makes that method worth running
   after *every* content write, regardless of how the content got there.
 
+### LL-0049 — Decorative text inside a control silently joins its accessible name, and optional-prop fixtures hide it
+
+- **Root Cause**: A new `CategoryRow` component rendered a category toggle as a
+  `<button>` containing the category name plus, when the category had a lesson,
+  a muted second line with the lesson title. The title span carried no
+  `aria-hidden`, so it contributed to the button's computed accessible name.
+  The toggle announced as "Management of Care Delegation, Assignment, and
+  Prioritization", and because the adjacent study link already carried
+  `aria-label="Study: <title>"`, a screen-reader user heard every lesson title
+  twice per row.
+- **Why It Happened**: Two independent failures had to line up. First, the
+  accessible name of a control is the concatenated text of its *entire*
+  subtree — visual hierarchy (a smaller, muted, secondary line) carries no
+  semantic weight at all, so text that reads as decoration to a sighted
+  reviewer reads as part of the label to assistive tech. Second — and this is
+  the transferable part — the whole test suite was blind to it. Eight
+  component tests and five integration tests existed, several querying the
+  toggle by exact category name via `getByRole("button", { name: category })`,
+  which is precisely the assertion that would have caught this. Every one of
+  them passed because the fixtures they used omitted the optional `lesson`
+  prop, so the extra text never rendered in any test that could have detected
+  it. In production all 8 categories have a lesson, so the defect was present
+  on 100% of real rows and 0% of tested rows.
+- **Solution**: Marked the second-line span `aria-hidden` — the title stays
+  visually present (it is the discoverability payload) and still reaches
+  assistive tech through the sibling link's `aria-label`. Then added a test
+  that renders the row *with* the optional prop populated and asserts the
+  toggle's accessible name is exactly the category string, verified red before
+  the fix and green after.
+- **Preventive Rule**: When a control's subtree contains text that is not part
+  of its label, mark it `aria-hidden` and prove it with a test that asserts the
+  exact accessible name (`getByRole(role, { name: "..." })` with a string, not
+  a regex — a substring or regex matcher passes right through this bug). More
+  generally: **for any component with an optional prop that renders additional
+  content, at least one test must exercise the populated branch against every
+  assertion that could be perturbed by it.** A fixture that omits an optional
+  prop is not a neutral default — it is an untested configuration, and when the
+  omitted case is the one that never occurs in production, the suite is testing
+  a shape that does not ship.
+- **Similar Situations**: Any accessible-name computation — buttons and links
+  containing badges, counts, timestamps, "new" pills, icon labels, helper text,
+  or truncated previews. The fixture half generalizes past a11y entirely: any
+  partial-fixture cast (`as unknown as T` with fields omitted) creates a gap
+  between what tests render and what production renders, and defects live
+  exactly in that gap. Related to the NCLEX project's own finding that a
+  fixture's `as unknown as Question` cast omitting required fields masked
+  unguarded `.length` reads — same root shape, different symptom.
+
 <!--
 Template for new entries — copy this block:
 
