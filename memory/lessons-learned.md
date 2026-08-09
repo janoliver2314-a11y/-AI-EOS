@@ -2047,6 +2047,145 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   fixture's `as unknown as Question` cast omitting required fields masked
   unguarded `.length` reads — same root shape, different symptom.
 
+---
+
+### LL-0050 — Mocking an integration function wholesale leaves its own response-parsing body with zero coverage
+
+- **Root Cause**: A Clerk API wrapper, `find_pending_invitation`, read the
+  `GET /invitations` response as a `{"data": [...]}` envelope, but the API
+  answers with a bare JSON array. Every real call raised
+  `AttributeError: 'list' object has no attribute 'get'`. The sibling function
+  `list_users` in the same module already did `for u in response.json():` —
+  i.e. the correct shape was documented right there in the codebase, ten lines
+  below the bug.
+- **Why It Happened**: The project had an explicit, sensible convention that
+  every third-party-API function is mocked at the boundary and never really
+  called in CI. That keeps tests fast and hermetic, but it means the mocked
+  function's *own body* — the HTTP call and, critically, the response
+  **parsing** — is the one piece of code no test ever executes. Callers'
+  tests all `monkeypatch.setattr(clerk_admin, "find_pending_invitation", ...)`,
+  so a 100%-broken adapter passed a 618-test suite. The shape assumption was
+  never validated against a real response, only against a hand-written mock
+  that encoded the *same wrong belief* as the code.
+- **Solution**: Fixed the parse to accept both shapes
+  (`payload.get("data", []) if isinstance(payload, dict) else payload`) and
+  added tests that exercise the function *body* against a fake `httpx`
+  response object, covering the bare array, the envelope, case-insensitive
+  matching, no-match, empty, and non-2xx. Verified red before / green after.
+- **Preventive Rule**: **Mock at the transport, not at the function, for at
+  least one test per integration wrapper.** If you monkeypatch the whole
+  function everywhere, add a companion test that stubs the HTTP client
+  (`httpx.get`, `fetch`, the SDK's session) and drives the wrapper's real
+  parsing code with a payload **copied from an actual recorded response**, not
+  invented. A mock you wrote from the same mental model as the code under test
+  cannot falsify that model. When several wrappers hit the same API, make their
+  response handling visibly consistent — a neighbouring function using a
+  different shape for the same vendor is a defect signal, not a style choice.
+- **Similar Situations**: Any API-client/adapter/serializer layer —
+  payment providers, auth vendors, LLM SDKs, webhooks, storage clients.
+  Especially acute when a vendor returns different envelope shapes per
+  endpoint or changes them across API versions. Related to LL-0049's fixture
+  point: a mock that omits or misstates reality is an untested configuration,
+  and defects live exactly in that gap.
+
+---
+
+### LL-0051 — A platform error page carries no CORS headers, so the browser hides the real status behind a generic network error
+
+- **Root Cause**: A 500 from a FastAPI app on Vercel is rendered by the
+  *platform*, not the app, so it does not pass through the app's
+  `CORSMiddleware` and ships without `access-control-allow-origin`. The
+  browser therefore blocked the response before JS could read it, `fetch()`
+  rejected with `TypeError: Failed to fetch`, and the UI's catch-all
+  translated that into "Can't reach the server — check your connection."
+  The actual event was a server-side `AttributeError`.
+- **Why It Happened**: The app's *own* error responses (401/409/502) do carry
+  CORS headers, because those are generated inside the app and pass through
+  the middleware. That makes the correct-looking inference — "error responses
+  are fine, so this must be connectivity or CORS" — and sends the
+  investigation to the wrong layer. CORS preflight also passed cleanly, which
+  reinforced the wrong conclusion.
+- **Solution**: Stopped trusting the client-side message and read the
+  platform's own runtime logs, which contained the full traceback with the
+  exact file and line. Root cause found in one step after that.
+- **Preventive Rule**: When a browser reports a *network-level* failure
+  (`Failed to fetch`, `Load failed`, status 0) against an endpoint whose
+  preflight succeeds and whose sibling endpoints work, **treat it as an
+  unhandled server exception until the server logs say otherwise** — do not
+  debug it as CORS or connectivity. Go to the server/platform logs first; the
+  client cannot see this class of error by construction. Corollary for
+  diagnosis: a client error string that is a *catch-all* (`catch { throw
+  genericMessage }`) carries no information about the actual failure — treat
+  it as "unknown", never as evidence.
+- **Similar Situations**: Any serverless/edge-hosted API behind a
+  browser client — Vercel, Netlify, Lambda+API Gateway, Cloudflare Workers.
+  Also gateway timeouts (504) and OOM kills, which fail the same way. The same
+  masking happens with any framework where the platform, not the app, renders
+  the failure page.
+
+---
+
+### LL-0052 — A per-item `try/except: log` in a batch loop turns total failure into silence
+
+- **Root Cause**: A daily cron's invite-reminder loop wrapped each row in
+  `try/except Exception: logger.exception(...)`. When a shared dependency
+  broke for *every* row, the job still returned HTTP 200 with a normal-looking
+  result body — `invite_reminder_sent: 0` — and no alert fired. A feature that
+  had shipped the day before was sending zero emails, and the only evidence
+  was buried in per-row log lines nobody was reading.
+- **Why It Happened**: Per-item isolation is the right instinct — one bad row
+  shouldn't kill a batch. But it silently conflates two very different
+  outcomes: "1 of 200 rows failed" (fine, keep going) and "200 of 200 rows
+  failed" (the feature is dead). A zero counter is indistinguishable from
+  "nothing was due today", which is also the *normal* state for this job, so
+  even a human reading the output would not flinch.
+- **Preventive Rule**: In any batch/cron loop with per-item exception
+  handling, **count failures alongside successes and return both**, then make
+  a total or near-total failure rate loud: raise, alert, or at minimum return
+  a distinct status when `failed > 0 && succeeded == 0`. Never let "attempted
+  N, succeeded 0, failed N" and "attempted 0" render identically. When a
+  scheduled job's success metric can legitimately be zero, that metric alone
+  cannot be used to verify the feature works — pair it with an explicit
+  failure count.
+- **Similar Situations**: Cron jobs, queue consumers, bulk importers,
+  notification fan-outs, webhook retry loops, migration scripts. Also
+  applies to log-and-swallow around optional side effects (search indexing,
+  analytics, cache warming) where the swallowed error means the feature is
+  entirely inert. Related to the NCLEX project's earlier finding that
+  indexing failures were log-and-swallowed, so a 200 response proved nothing
+  and the index had to be counted directly.
+
+---
+
+### LL-0053 — Automated browser tools suppress native `confirm()`, so a confirm-gated action silently no-ops
+
+- **Root Cause**: An admin button gated behind `window.confirm()` appeared
+  completely dead when driven through an agent-controlled browser pane. The
+  automation layer disables native JS dialogs by design and returns `false` to
+  the page, so the guarded branch never ran and no request was ever sent. The
+  console said so explicitly — `Page dialog suppressed (confirm): ... confirm()
+  returned false to the page` — but only when read directly.
+- **Why It Happened**: The failure is indistinguishable from a broken
+  handler: no error, no network activity, no UI change. It also survives the
+  obvious workaround of "have the human click it", because a human clicking
+  *inside the same automated pane* hits the same suppression — the property
+  belongs to the browser context, not to who moved the mouse. That cost
+  several rounds of misattributed debugging.
+- **Preventive Rule**: When a UI action produces **no network request at
+  all**, read the browser console before touching application code, and check
+  for dialog suppression specifically if the control is gated by
+  `confirm`/`alert`/`prompt`. For verification that must exercise a
+  confirm-gated path, drive it from a genuinely separate browser process, or
+  test the endpoint directly. Do not "fix" this by patching `window.confirm`
+  in an automated session — that defeats a deliberate safety guard and, worse,
+  would have hidden the real server-side bug underneath it.
+- **Similar Situations**: Any agent/CI-driven browser (Playwright, Puppeteer,
+  Selenium, agent browser panes) meeting `confirm`, `alert`, `prompt`,
+  `beforeunload`, file pickers, permission prompts, or basic-auth dialogs.
+  Generalises to a debugging rule: **"no request was sent" and "the request
+  failed" are different bugs living in different layers** — distinguish them
+  before forming a hypothesis.
+
 <!--
 Template for new entries — copy this block:
 
