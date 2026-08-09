@@ -2186,6 +2186,233 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   failed" are different bugs living in different layers** — distinguish them
   before forming a hypothesis.
 
+### LL-0054 — A local `.env` makes the local suite more permissive than CI's, so "green locally" can mean "never ran in CI"
+
+- **Root Cause**: The seven tests written to close LL-0050 — the ones that
+  finally exercise a Clerk wrapper's real parsing body instead of mocking the
+  function wholesale — failed in CI on every push with
+  `503: Clerk admin API is not configured: set CLERK_SECRET_KEY`. Running the
+  real body reaches the module's `_headers()` credential guard, which raises
+  when the key is unset. A developer machine has a `.env` supplying one; the
+  CI job sets exactly three env vars and nothing else. So the fix for LL-0050
+  was green locally and red in CI **from the moment it landed**, and stayed
+  red across three consecutive pushes because the local signal said green and
+  nobody opened the Actions tab.
+- **Why It Happened**: Two compounding causes. First, the *direct* one: the
+  suite's convention of mocking integrations at the function boundary meant no
+  existing test had ever reached a credential guard, so nothing established
+  the habit of pinning secrets in-test. The new tests were the first to run a
+  real body, and thus the first to need one. Second, the *systemic* one:
+  nobody had ever compared the local environment to CI's. Locally `.env`
+  supplied **every** secret — Clerk, Qdrant, Voyage, Resend, cron — while CI
+  supplied three database vars. The two suites had silently diverged into
+  different suites, and the more permissive one was the one being used to
+  decide whether to push. Blanking an env var did not reproduce it either:
+  pydantic-settings ran with `env_ignore_empty=True` and an `.env` path
+  anchored to the repo root, so `SECRET="" pytest` still loaded the real
+  value — the obvious reproduction attempt produced a false all-clear.
+- **Solution**: Pinned a fake key via an autouse fixture in the affected
+  module rather than adding a CI secret, so it depends on nothing outside the
+  repo. Then fixed the class of bug rather than the instance: an autouse
+  fixture in the root `conftest` now resets every setting CI does not provide
+  back to its class default, so a local run can only pass if it would pass in
+  CI. A companion test parses the workflow file and asserts the "CI provides
+  these" list matches the job's actual `env:` block, so adding a CI env var
+  without updating the list fails loudly instead of silently restoring the
+  permissive run. Proven rather than assumed: disabling the module fixture now
+  makes those seven tests fail *locally*, where before they failed only in CI.
+- **Preventive Rule**: **Make the local test environment provably equal to
+  CI's, and check CI after pushing — a green local run is evidence about your
+  machine, not about the build.** Concretely: enumerate what CI provides,
+  reset everything else to defaults in a root-level autouse fixture, and tie
+  that enumeration to the CI config with a test so the two cannot drift. Any
+  test that genuinely needs a credential pins it itself. Never conclude a
+  secret-dependent test is environment-independent without simulating the
+  absence — and verify your simulation actually took effect, because settings
+  libraries routinely ignore empty env vars in favour of a file.
+- **Similar Situations**: Any repo where developers keep a `.env` that CI
+  lacks — which is most of them. Especially dangerous when the local values
+  are *production* credentials: here `QDRANT_URL`, `VOYAGE_API_KEY` and
+  `RESEND_API_KEY` were live, so the same divergence that hid a CI failure
+  also let unmocked tests reach production services (the cause behind an
+  earlier incident where the suite wrote fixtures to the live vector index).
+  The same shape appears with feature flags defaulted on locally, seeded
+  fixture data absent in CI, and locale or timezone set only on the laptop
+  (cf. LL-0039). Direct sequel to LL-0050: closing a coverage gap moved the
+  code into a new environment, and the new environment had its own gap.
+
+---
+
+### LL-0055 — When one dependency has no local equivalent, the whole test suite quietly runs against production
+
+- **Root Cause**: Every `pytest` run wrote test-fixture points into the
+  **production** vector index. `SUPABASE_URL` pointed at a local stack, but
+  `QDRANT_URL` pointed at Qdrant Cloud — there is no local Qdrant — so eight
+  publish tests that never patched the indexer called the real embeddings API
+  and the real production collection. Each run deleted its fixture rows from
+  the local database but nothing de-indexed the remote point, so every run
+  left an orphan behind in live retrieval.
+- **Why It Happened**: "Local development environment" was treated as a single
+  binary state rather than a per-dependency property. Most of the stack had a
+  local equivalent, so the mental model was "tests run locally"; the one
+  managed service without a local option silently broke that. Two things then
+  hid it: the publish route **log-and-swallows** indexing errors, so the tests
+  passed whether the write succeeded or failed (cf. LL-0052), and the orphaned
+  data lived in a system nobody inspected during normal work. It surfaced only
+  when someone scrolled the live index for an unrelated reason and found a
+  fixture record with no matching row.
+- **Solution**: An autouse fixture in the root `conftest` neutralises all four
+  index/deindex entry points for the whole suite; tests that assert indexing
+  patch those names themselves and still win, and the module that tests the
+  indexer is exempt because it stubs one layer lower. The entry points are
+  kept in a single named list so a new one cannot be added without the guard
+  covering it. An equivalent guard already existed for ops scripts — written
+  after a backfill deleted published content from the same live index — but
+  nobody had asked whether the test suite needed one too.
+- **Preventive Rule**: **Enumerate every external dependency and ask, per
+  dependency, "what does a test run hit?" — not "am I running locally?"** Any
+  dependency with no local emulator needs an explicit suite-wide block, not a
+  per-test convention, because the failure mode is silent and cumulative.
+  Corollary: **deleting the artefact without fixing its producer is theatre** —
+  the next run recreates it, so always find what created a stray record before
+  calling the cleanup done. And when you build a safety guard for one entry
+  point into live infrastructure (ops scripts), immediately ask which *other*
+  entry points (test suite, local CLI, notebooks) share the same exposure.
+- **Similar Situations**: Any managed-only service — hosted search, vector
+  stores, payment sandboxes with a single shared tenant, email senders,
+  analytics, feature-flag services, LLM APIs. Especially where the client
+  log-and-swallows errors, since that removes the loudest signal that a test
+  is talking to something real. Directly related to LL-0054: the same
+  local/CI environment asymmetry, seen from the other side.
+
+---
+
+### LL-0056 — A suppression-only test suite passes under an inverted comparison, so escalation is never actually tested
+
+- **Root Cause**: A day2/day4/day7 email escalation deduped by checking each
+  stage's own identifier, so a long-overdue user got "day7" on the first run,
+  then wrongly fell back to "day4" on the next and "day2" after that —
+  descending urgency, exactly backwards. Fixed to a rank check: find the
+  single highest currently-due stage and fire it only if nothing at least that
+  urgent was already sent. Then the review found the **fix itself was
+  untested**: no test anywhere asserted either function ever returns the middle
+  stage, and a mutation (flip `<=` to `>=`) proved every existing test still
+  passed while silently truncating both sequences at the first stage forever.
+- **Why It Happened**: The tests were all written from the "don't spam people"
+  worry, which is the *suppression* property: stage N was sent, does stage N
+  correctly not re-fire? Every one of those passes under an inverted
+  comparison, because a mutation that suppresses too much still suppresses.
+  The complementary property — stage N was sent, does stage N+1 correctly fire
+  later? — is the *escalation* path, and nothing exercised it. The two read as
+  the same feature in prose ("send the right reminder at the right time") but
+  are separate behaviours with opposite failure directions, and a test suite
+  written from one worry is blind to the other.
+- **Solution**: Added explicit escalation tests for both functions, each
+  **independently mutation-verified by the reviewer** — not merely trusted from
+  the fixer's report — to be the sole detector of its mutation across a 60+
+  test blast radius. Note the original defect was a bug in the written *plan*,
+  not an implementer error, and was caught by a task reviewer mid-implementation;
+  the plan document was corrected before the fix was dispatched.
+- **Preventive Rule**: **For any state machine or staged sequence, test that it
+  advances, not only that it doesn't repeat.** Write the pair explicitly: "N
+  sent → N does not re-fire" *and* "N sent → N+1 fires when due". When a fix
+  changes a comparison operator, mutate it and confirm at least one test fails;
+  if none does, the fix is unverified regardless of how many tests are green.
+  Generalises beyond sequences: **a suite written from a single worry only
+  tests one direction of the property**, so name the opposite failure
+  ("fires too little" vs "fires too much") and check you have a test for each.
+- **Similar Situations**: Retry/backoff ladders, dunning and reminder emails,
+  onboarding drip sequences, escalation policies in on-call, rate limiters,
+  cache invalidation, feature-flag rollout stages, order/subscription state
+  machines. Any place where "did nothing" is a plausible-looking outcome — see
+  LL-0052 for the same shape at the batch-loop level.
+
+---
+
+### LL-0057 — Fixing a generator is not enough if its own input was already corrupted by the earlier run
+
+- **Root Cause**: A seed-generation script built its INSERT from a
+  hand-transcribed list of table columns that omitted two real ones, so a
+  database reset seeded 200 rows with NULL in both — silently, because an
+  INSERT naming a subset of columns just applies the defaults. A whole-bank
+  per-column parity check caught it. The column list was then fixed — and the
+  very first regeneration **reproduced the identical mismatch**, because the
+  generator reads from the local database to build its values, and local had
+  already been overwritten with the NULLs by the bad reset. Regenerating from
+  a corrupted source faithfully re-encodes the corruption.
+- **Why It Happened**: The mental model was "generator produces artefact", so
+  fixing the generator felt like fixing the problem. But the pipeline was
+  really source → generator → artefact → **source**, a loop the earlier run had
+  already poisoned. The second failure is more instructive than the first: the
+  fix was correct and still produced a wrong result, which is exactly the
+  situation that erodes trust in the fix rather than in the input. The original
+  slip was mundane — a column list written from memory instead of queried.
+- **Solution**: Two steps, in order: restore the input from a known-good source
+  (the original draft data, re-upserted) to repair the corruption, **then**
+  regenerate from the now-correct source. Plus a standing guard: the generator
+  now asserts its column list against a live `information_schema` query as an
+  exact set equality — not a count — before writing anything, so a schema change
+  or a mistyped list fails loudly instead of defaulting a column to NULL.
+- **Preventive Rule**: **When a generated artefact is wrong, fixing the
+  generator is necessary but not sufficient — check whether the generator's
+  input was already corrupted by the same bug's earlier run, and repair the
+  input first.** Ask "what does this read from, and did the broken version
+  write there?" before regenerating. Separately: **never hand-transcribe a
+  schema.** Derive column lists from the live schema and assert set equality,
+  because a subset is silently valid in SQL and produces defaults rather than
+  an error.
+- **Similar Situations**: Code generators reading a database or a previous
+  build output, migration/backfill scripts, snapshot tests regenerated with
+  `--update` after a real regression, lockfiles, denormalised caches rebuilt
+  from a table the bug already wrote to, ETL that re-ingests its own exports,
+  and any "just regenerate it" recovery step. Related to LL-0044 (a backfill
+  must replay every field the real flow sets) and LL-0036 (prove a
+  reconstruction against its source, don't eyeball it).
+
+---
+
+### LL-0058 — Randomising presentation order invalidates every stored reference to a position, including in text a downstream system generates
+
+- **Root Cause**: Exam options are shuffled per session so their displayed
+  letters differ from stored order. An LLM tutor answering "why is my answer
+  wrong?" was handed the stored options and referred to them by their stored
+  letters, so it told students about "option B" when the student had seen that
+  content as D. It also never learned which option the student actually chose.
+  The same class of defect existed in authored content: rationales referencing
+  "option B" and items whose stored order *was* the answer order.
+- **Why It Happened**: Shuffling was introduced as a display concern, and
+  display concerns are assumed not to reach back into stored data. But a letter
+  is an identifier the content refers to, so randomising the mapping between
+  identifier and position retroactively falsified every stored sentence that
+  named one — including sentences generated later by a model reading the stored
+  form. Nothing failed loudly: the tutor's answer was fluent and confidently
+  wrong, and the authored rationales were still grammatical.
+- **Solution**: Pass the session's actual display order (and the student's
+  chosen option) to the consumer, and re-letter options, correct answer, and
+  rationale by display position before use; ignore a display order that isn't a
+  valid permutation, so nothing unverifiable can steer generated content. Pin
+  the contract with tests on both sides of the wire, and verify live that a
+  stored key rendered at a different position is described by its *displayed*
+  letter. In the authoring rules, forbid referring to options by letter at all —
+  quote or describe the option's content instead.
+- **Preventive Rule**: **If presentation order is randomised, positional labels
+  are not stable identifiers — ban them from stored content and pass the live
+  ordering to anything that renders or reasons about it.** Write rationales,
+  explanations, and prompts to reference *content*, not position. When adding a
+  shuffle to an existing system, grep for every stored string that names a
+  position and treat each as a defect. And whenever an LLM consumes your stored
+  data, remember it will faithfully reproduce whatever stale identifiers you
+  hand it — with total fluency and no error signal.
+- **Similar Situations**: A/B-ordered survey questions, randomised quiz and
+  poll options, shuffled search or recommendation slates referenced in
+  copy/analytics, "the third card" in onboarding text, screen-reader labels
+  derived from index, and any RAG or prompt context assembled from stored
+  records whose display form differs from storage. The general shape: an
+  identifier that is only valid within one rendering, leaking into a durable
+  artefact.
+
+---
+
 <!--
 Template for new entries — copy this block:
 
