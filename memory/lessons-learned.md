@@ -2494,6 +2494,48 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
 
 ---
 
+### LL-0061 — A credential pointing at the wrong environment returns a subset, not an error, so the read looks like data loss
+
+- **Root Cause**: A lookup that resolves user records ran with a local
+  credential for the provider's **development** instance, while the data being
+  joined against had been produced, in part, by the **production** instance.
+  The call returned HTTP 200 with 5 of ~15 records. Four ids were looked up;
+  one resolved and three did not. Nothing errored, no warning was emitted, and
+  the natural reading of the result — "those three records were deleted" — was
+  wrong in a way that would have shaped the next decision.
+- **Why It Happened**: The system had migrated to a production instance on a
+  known date, and identifiers minted before and after that date belong to
+  *different* instances. No single credential can resolve the full history, and
+  each environment answers confidently about the half it owns. The local config
+  had never been repointed because every prior task happened to touch records
+  from one side of the cutover only. The first instinct was to suspect
+  pagination — the same failure shape as LL-0060 — but an explicit high limit
+  was already set, which cost a detour before the environment split was
+  considered.
+- **Solution**: Confirm which instance a credential addresses *before* trusting
+  a lookup that spans a migration boundary — the cheapest signal is a total
+  count against a known expected magnitude (5 vs ~15), not an inspection of the
+  key itself. Where the missing records could not be resolved directly,
+  existence was proven **indirectly through side-effect history**: rows in a
+  delivery log showed the production system had successfully resolved those
+  same ids days earlier, which established reachability without ever holding
+  the production credential.
+- **Preventive Rule**: **Treat a short result from an environment-scoped
+  credential as a wrong-environment signal until proven otherwise, and never
+  conclude "the record is gone" from a lookup you have not confirmed is pointed
+  at the environment that owns it.** When a migration splits identifiers across
+  two instances, write down which side of the cutover each cohort lives on —
+  that fact is invisible in the data and expensive to rediscover. Prefer
+  proving existence from a system's own side-effect log over acquiring a
+  production credential to answer the question directly.
+- **Similar Situations**: Clerk/Auth0/Firebase dev-vs-prod tenants, Stripe test
+  vs live keys, sandbox vs production payment and e-signature APIs, a staging
+  database URL left in a local env file, multi-region accounts where a regional
+  endpoint answers only for its own region, and any post-migration system where
+  old and new identifiers coexist in one table.
+
+---
+
 <!--
 Template for new entries — copy this block:
 
