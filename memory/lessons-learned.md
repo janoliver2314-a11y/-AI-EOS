@@ -2413,6 +2413,87 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
 
 ---
 
+### LL-0059 — A sync tool that carries only part of the state a workflow mutates reports success while silently dropping the rest
+
+- **Root Cause**: A script reconciles review state from a production database
+  into a checked-in seed file. Its per-table spec declared which columns to
+  *carry*. For one table it carried three columns (audit trail, verified-source
+  flags, lifecycle stage); for the other it carried only the audit trail. A
+  review of 200 items then published all of them — which moves the stage and
+  flips the verified flags — and the tool reported "200 rows topped up" and
+  wrote the audit trail alone. A database reset would have replayed every one
+  of those rows back to unreviewed with unverified sources, while the audit
+  trail claimed a human had approved them.
+- **Why It Happened**: The narrow spec had never been wrong *before*, because
+  every prior run of that path happened to be an append-only action that moves
+  no state. The tool was therefore "proven in production" against exactly the
+  one mutation that could not expose the gap. The identical hole had been found
+  and fixed in the sibling table three days earlier, and the fix was applied
+  where the bug was observed rather than to the shared concept — leaving an
+  asymmetry between two specs of the same shape, which reads as deliberate
+  design rather than an unfinished fix.
+- **Solution**: Give both tables the same carry set and widen the guarded
+  content columns; add regression tests per table, each verified to fail
+  against the pre-fix spec so they are not vacuous. Then prove the whole thing
+  end to end rather than trusting the tool's own report: replay the seed from
+  scratch and hash every column on both sides, which is what showed the state
+  columns converging and the content columns already matching.
+- **Preventive Rule**: **Derive a sync tool's carry set from the full set of
+  columns the workflow can mutate, not from the mutations you have seen.** Ask
+  "what does the *widest* action on this path change?" and carry all of it. A
+  tool whose per-entity configs are the same shape but different contents is
+  asserting a real difference — if you cannot state why, it is an unfinished
+  fix, not a design. And when a bug is found in one entity handled by shared
+  machinery, immediately check every sibling before closing it.
+- **Similar Situations**: Any partial-state reconciler — env/config sync
+  between environments, cache warmers, search-index updaters, CRM or billing
+  sync jobs, fixture regenerators, replication filters, and ETL column
+  allowlists. The general shape: a tool that reports on the subset it knows
+  about and stays silent about everything it was never told to look at, so its
+  success message is scoped to its own blind spot.
+
+---
+
+### LL-0060 — A capped read fails by succeeding, and a completion message counted from the truncated set will confirm it
+
+- **Root Cause**: A backfill that embeds every published record into a vector
+  index read its source with an unpaginated, unordered `select`. The data layer
+  (PostgREST) caps such a read at 1000 rows and returns 200 OK with no warning,
+  so the job processed 1000 of 1635 records and printed "Done: all 3015 claims
+  indexed." Because no `order` was specified, *which* 1000 rows came back was
+  arbitrary — so the missing records were scattered across every id prefix
+  rather than forming a contiguous tail, and the damage read like sporadic
+  per-item failures in a downstream service rather than a bad query.
+- **Why It Happened**: The job was written and validated when the table was
+  under the cap, so it was correct at the time and silently became wrong as the
+  data grew — the same growth blind spot as LL-0027, but inverted: there the
+  request grew until it broke loudly, here the response quietly shrank. The
+  completion message made this durable: it counted what the job *processed*,
+  which by construction can never reveal what it failed to read. Two separate
+  investigations had already accepted a plausible wrong cause (rate-limit
+  failures in an earlier run) because the numbers were self-consistent.
+- **Solution**: Paginate with an explicit `order` and a fixed page size, looping
+  until a short page. Add tests whose fake client *models the 1000-row cap*
+  rather than the client's happy path — modelling the cap is what makes them
+  fail against the old code with a meaningful assertion instead of erroring on
+  a missing attribute. Verify the fix by the count the job *collected* against
+  the count the source *holds*, not by the job's exit status.
+- **Preventive Rule**: **Never read "everything" in one call from a paginated
+  API; and make every bulk job compare what it processed against what the
+  source says exists, failing loudly on a mismatch.** A count printed from the
+  set you just walked is not evidence of completeness. When a bulk job's output
+  looks partial, suspect a truncated *read* before blaming the write path — and
+  when a data-layer read has no `order`, treat the returned subset as arbitrary,
+  which makes "scattered, random-looking gaps" a symptom of truncation, not
+  evidence against it.
+- **Similar Situations**: PostgREST/Supabase default limits, DynamoDB scan
+  pagination, S3 `ListObjects` truncation, Elasticsearch's 10k window, GitHub
+  and Stripe API page defaults, LDAP size limits, BigQuery/Sheets export caps,
+  and any "reindex/backfill/migrate everything" job whose success line is a
+  count of its own work.
+
+---
+
 <!--
 Template for new entries — copy this block:
 
