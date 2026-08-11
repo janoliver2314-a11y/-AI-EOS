@@ -2534,6 +2534,185 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   endpoint answers only for its own region, and any post-migration system where
   old and new identifiers coexist in one table.
 
+### LL-0062 — A service that reports "healthy" before it has finished migrating will make your verification roll back a healthy system
+
+- **Root Cause**: An upgrade script waited for the service's health endpoint to
+  return 200, then immediately read database state to compare against a
+  pre-upgrade baseline. The service binds its health port *before* schema
+  migrations begin — six milliseconds before, per its own startup log — so the
+  comparison ran against a database another process was actively migrating.
+  Counters that legitimately change during startup (webhook re-registration for
+  active workflows) would mismatch, and a mismatch triggers automatic rollback:
+  stop the service, move the data directory aside, restore from backup.
+- **Why It Happened**: "Healthy" and "ready" answer different questions, and
+  most services expose the first by default. Liveness asks "is the process up";
+  readiness asks "can it serve correctly". The upgrade needed the second and
+  asked the first. This is invisible in testing, where there are few migrations
+  and no active work to re-register, so the race only appears against a real
+  system — and it appears on the *success* path, meaning the least-tested code
+  (rollback) becomes the expected outcome of a normal upgrade.
+- **Solution**: Gate verification on a readiness endpoint that explicitly means
+  "connected and migrated", and require both liveness and readiness rather than
+  substituting one for the other. Re-read volatile counters a bounded number of
+  times before declaring failure, so a single transient read cannot trigger a
+  destructive rollback. Verify the readiness response *body*, not just its
+  status code: many web applications return HTTP 200 with an HTML page for any
+  unknown path, so a mistyped readiness URL fails open and silently reinstates
+  the whole race with no log line.
+- **Preventive Rule**: **Never treat a liveness signal as permission to read
+  state you intend to compare.** Ask what the endpoint actually asserts, not
+  what its name suggests. When a check's failure mode is destructive, make it
+  retry before it fires, and make it fail closed when its own probe looks
+  wrong — a health gate that accepts any 200 is not a gate.
+- **Similar Situations**: Kubernetes liveness vs readiness probes, connection
+  pools that accept before warming, app servers that bind before running
+  migrations (Rails, Django, Keycloak, n8n), load balancers adding a backend on
+  a bare TCP check, post-deploy smoke tests racing an async warmup, and any
+  "wait for healthy then assert" step in a deployment pipeline.
+
+### LL-0063 — An automated retention policy that matches by prefix will eventually delete something a human made
+
+- **Root Cause**: A backup routine globbed `<prefix>-*`, sorted lexically, and
+  deleted everything beyond a retention count. During an incident a human had
+  created a rescue backup named `<prefix>-2026-08-10-pre-2.33.7`, while the
+  script's own format was `<prefix>-20260810-215728`. Because `-` sorts below
+  `0`, the hand-named directory sorted as the *oldest* entry and would have been
+  the first thing deleted — destroying the only pre-incident restore point as a
+  side effect of a routine upgrade.
+- **Why It Happened**: The glob expressed "things that look like my backups"
+  while the intent was "things I created". Those sets differ only once a human
+  puts something in the same directory — which is exactly what happens during an
+  incident, under time pressure, when someone wants a rescue copy somewhere
+  obvious. A second instance of the same confusion: disposable copies produced
+  by dry runs were competing for retention slots with real verified backups, so
+  merely running the test suite evicted genuine restore points.
+- **Solution**: Restrict automated deletion to names matching the exact format
+  the tool itself emits, and treat everything else as operator-owned and
+  untouchable. Partition automated artifacts by kind so throwaway copies and
+  irreplaceable ones never share a retention budget.
+- **Preventive Rule**: **Automated cleanup deletes only what it can prove it
+  created.** Match the generator's own format exactly, never a loose prefix, and
+  never let disposable artifacts compete with irreplaceable ones for the same
+  slots. Put the hazard in a comment beside the filter — otherwise a later
+  reader will "simplify" it back to a glob.
+- **Similar Situations**: Log rotation over a shared directory, snapshot and AMI
+  pruning by name tag, cache eviction that catches pinned entries, `docker
+  system prune` removing hand-tagged images, tmp-file reapers, and CI artifact
+  retention deleting a manually uploaded diagnostic bundle.
+
+### LL-0064 — "It was stopped a moment ago" is not "it is stopped now": re-check external state in the step that acts on it
+
+- **Root Cause**: A script stopped a container, then several steps later copied
+  its database file. In between, the container restarted itself — a restart
+  policy of `unless-stopped` brings containers back when the daemon returns, and
+  the daemon had just been upgraded. The copy therefore ran against a database
+  with a live writer attached, producing a torn backup that nothing downstream
+  would have flagged.
+- **Why It Happened**: Classic check-then-act. The code reads as sequential and
+  safe, and the gap was only a few statements. But the state being checked
+  belongs to another system with its own opinions about when to run, so the size
+  of the interval is not the risk — the existence of one is. A related defect
+  sat in the state helper itself: it inferred "not running" from *any* failure
+  to query, so a daemon hiccup or a permissions error read as "safe to proceed".
+- **Solution**: Verify the precondition immediately before the operation it
+  protects, in the same step, not earlier in the sequence. Make the state query
+  distinguish running / stopped / *unknown*, and refuse on unknown — the same
+  standard already applied to integrity checks elsewhere in the same script.
+- **Preventive Rule**: **A precondition checked earlier than the action it
+  guards is documentation, not a guard.** Re-verify at the point of use, and
+  make "cannot determine" refuse rather than proceed. A guard that fails open is
+  worse than none, because it is trusted.
+- **Similar Situations**: TOCTOU file races, `kill` after a PID lookup, lock
+  files, acting on a lease long after acquiring it, deleting a resource after
+  listing it, systemd `Restart=always`, Kubernetes controllers recreating a pod
+  you just deleted, and autoscalers replacing an instance mid-maintenance.
+
+### LL-0065 — Inspecting a system read-write perturbs it, and the perturbation looks like the bug
+
+- **Root Cause**: While diagnosing a possibly-corrupt database, the
+  investigation opened it with a default (read-write) connection to run an
+  integrity check. That triggered write-ahead-log recovery and created sidecar
+  files, after which the same file reported *malformed* on one run and *clean*
+  on the next. Time was lost chasing a corruption the diagnosis had itself
+  partly manufactured, and two byte-identical copies produced contradictory
+  results.
+- **Why It Happened**: The default connection mode of most database clients is
+  read-write, and "I am only running a PRAGMA" feels read-only. The write
+  happens in the engine's recovery path, not in the statement being issued, so
+  nothing in the visible command hints at mutation.
+- **Solution**: Route every inspection through an explicitly read-only handle,
+  isolated in a single helper so no future call site can forget. Work on copies
+  for any destructive experiment. When results differ between identical inputs,
+  suspect the observer before concluding the data is unstable.
+- **Preventive Rule**: **Diagnosis must not be able to write.** Make read-only
+  the mechanically enforced default for every inspection path rather than a
+  habit at each call site, and treat non-reproducible results across identical
+  inputs as evidence that the tooling is mutating state.
+- **Similar Situations**: SQLite WAL recovery on open, `fsck` on a mounted
+  filesystem, git commands that take index locks or refresh the index, GUI
+  database clients that silently run migrations on connect, profilers that alter
+  timing, and debuggers whose breakpoints change scheduling.
+
+### LL-0066 — A test hook in production code becomes a silent-failure path in production
+
+- **Root Cause**: To exercise a reporting branch, an environment-variable
+  override was added to a production script so a test could inject synthetic
+  data. Feeding that override malformed input made the script exit 0 with empty
+  output — indistinguishable from a successful run with nothing to report, in a
+  tool whose entire contract was that silence must be unambiguous. Nothing gated
+  the hook to a test context, so a stray export in a cron environment would have
+  fabricated the report.
+- **Why It Happened**: The branch looked untestable end to end, so a backdoor
+  felt pragmatic. It was not untestable: shadowing a real dependency on `PATH`
+  so that detection genuinely failed exercised the same branch through the
+  production path, and tested it better — the synthetic-data version never ran
+  the detection logic at all, which was the part that could break.
+- **Solution**: Delete the hook and test through the real path by controlling
+  the environment the real code reads. Where a branch genuinely resists that,
+  extract the logic into a sourceable function and unit-test it. An escape hatch
+  in the shipped artifact is the last resort, not the first.
+- **Preventive Rule**: **Never ship a code path that only tests use.** If a
+  branch seems unreachable in test, control the input the real code reads —
+  `PATH`, config, fixtures, clock — rather than adding an input only the test
+  knows about. Distinguish this from legitimate configuration: an override that
+  selects an *input* still runs all the real logic, while one that replaces a
+  *computed result* skips the very logic under test.
+- **Similar Situations**: `if (env === 'test')` branches in shipped code, mock
+  injection points left in release builds, debug flags that skip authentication,
+  feature toggles read from unvalidated environment variables, and test seams
+  that bypass validation.
+
+### LL-0067 — A platform's "testing" mode expires credentials on a timer, and the symptom looks like random breakage
+
+- **Root Cause**: An OAuth integration stopped working roughly a week after each
+  authorization, repeatedly. The provider's app had been left in *Testing*
+  publishing status, where refresh tokens are expired after seven days by
+  policy. Nothing failed at authorization time, nothing warned as the deadline
+  approached, and the automation simply went quiet — the outage ran nine days
+  before anyone noticed.
+- **Why It Happened**: Development-mode defaults are built for building, not for
+  running, and the restriction is a policy timer rather than a capability
+  difference, so everything works perfectly right up until it does not. The
+  timeline also actively misleads: measuring from the credential's *creation*
+  date rather than its most recent *re-authorization* hid the seven-day period
+  and led to the correct cause being investigated, wrongly ruled out, and only
+  confirmed later by reading the provider console directly.
+- **Solution**: Publish the app to production status — which is free, and is a
+  separate thing from *verification*, the paid step needed only to remove an
+  unverified-app warning or exceed a user cap — then re-authorize so new tokens
+  are issued outside the timer. Read the console for the actual status rather
+  than inferring it from symptoms.
+- **Preventive Rule**: **Before debugging a periodic credential failure, read
+  the provider's publishing/environment status, and date the timeline from the
+  last re-authorization rather than from creation.** For anything running
+  unattended, derive a liveness signal from the work itself — "no successful run
+  in N hours" — because scanning error logs fails precisely when a broken
+  integration stops logging at all.
+- **Similar Situations**: Google OAuth apps in Testing mode, Slack and Meta apps
+  in development mode, Apple sandbox certificates, Stripe test keys, short-lived
+  or self-signed TLS certificates, service-account keys under rotation policy,
+  and free-tier API tokens with periodic invalidation.
+
 ---
 
 <!--
