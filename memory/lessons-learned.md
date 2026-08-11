@@ -2713,6 +2713,70 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   or self-signed TLS certificates, service-account keys under rotation policy,
   and free-tier API tokens with periodic invalidation.
 
+### LL-0068 — A read-only inspection tool can transform what it returns, manufacturing the exact defect you are investigating
+
+- **Root Cause**: A delivered email appeared to have a corrupted one-click
+  unsubscribe URL and a corrupted `<meta viewport>` tag: `width=device-width`
+  arrived as `width<U+FFFD>vice-width`, and `&token=49d7fb…` as `&tokenId7fb…`.
+  The source template was correct. The damage was a spurious quoted-printable
+  decode applied to text that had already been decoded: the API returns body
+  data with the transfer encoding *already removed* while still exposing the
+  original `Content-Transfer-Encoding: quoted-printable` header, and the client
+  honoured that header and decoded a second time. The mail on the wire was
+  fine; the reader broke it.
+- **Why It Happened**: The tool was read-only, so it was trusted implicitly —
+  the failure mode considered was "the tool cannot see everything," never "the
+  tool alters what it shows." The corruption was also *plausible*: it landed on
+  exactly the bytes that mattered, and only where `=` was followed by two hex
+  digits, so `charset=utf-8` and `initial-scale=1` survived. A defect that
+  selective reads as a real encoding bug, not as an artifact.
+- **Solution**: Read a **control artifact from an unrelated producer** through
+  the same tool. An email from a different sender on a different provider, read
+  the same way, showed the identical `IE=edge` → `IE<U+FFFD>ge` damage. One
+  vendor cannot corrupt another vendor's output, so the reader was proved
+  guilty without ever obtaining the raw bytes.
+- **Preventive Rule**: **Before believing a defect that only one tool can see,
+  make that tool read something it cannot possibly be responsible for.** If the
+  defect appears there too, the tool is the bug. Prefer a path that returns raw
+  bytes for any question about encoding or formatting, and treat any reader
+  that decodes, re-encodes, prettifies, or normalises as a suspect — being
+  read-only makes a tool safe, not honest.
+- **Similar Situations**: Mail APIs that pre-decode bodies but keep the original
+  CTE header, terminals and log viewers that interpret escape sequences,
+  clipboard managers that convert smart quotes, JSON viewers that reformat
+  numbers or reorder keys, screenshot pipelines that rescale or re-compress,
+  diff tools that normalise line endings or whitespace, and browser devtools
+  that show a parsed DOM rather than the served HTML.
+
+### LL-0069 — A GET that mutates is unsafe the moment its URL travels in an email
+
+- **Root Cause**: An unsubscribe endpoint opted the recipient out on `GET`,
+  immediately after verifying a token in the query string. The link was
+  embedded in student emails. Mail clients, link-preview generators and
+  corporate security scanners routinely fetch URLs found in delivered mail, so
+  any of them could have silently opted a recipient out of email they still
+  wanted — with no user action and no trace distinguishing it from a real
+  click.
+- **Why It Happened**: The token made the URL feel safe, which conflated two
+  different properties: the token provides *authentication* (only the intended
+  recipient's link works), not *intent* (someone deliberately chose this). A
+  one-click flow also makes mutating-on-GET feel like the whole point, since
+  any confirmation step reads as friction.
+- **Solution**: Make `GET` render a confirmation that `POST`s, and move every
+  mutation to the `POST` handler. For email specifically this is what RFC 8058
+  standardises: advertise the URL in `List-Unsubscribe` only alongside
+  `List-Unsubscribe-Post: List-Unsubscribe=One-Click`, which tells compliant
+  clients to POST and keeps scanners that merely GET harmless.
+- **Preventive Rule**: **Authentication is not intent — a credential in a URL
+  proves who, never whether.** Keep every state change behind a non-safe HTTP
+  method, and assume any URL that reaches an inbox will be fetched by machines
+  that never read it.
+- **Similar Situations**: Email confirmation and verification links, "approve"
+  and "decline" links in notification mail, magic-login links consumed by a
+  scanner before the user clicks, one-click order or RSVP actions, GET-based
+  logout or delete endpoints reachable by prefetch, and any webhook-style URL
+  pasted into a chat client that unfurls links.
+
 ---
 
 <!--
