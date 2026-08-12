@@ -2777,6 +2777,105 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   logout or delete endpoints reachable by prefetch, and any webhook-style URL
   pasted into a chat client that unfurls links.
 
+### LL-0070 — A keyword search is not an existence check: it finds what is *named*, not what is *implemented*
+
+- **Root Cause**: Verifying "does X already exist here?" with a substring query
+  (`grep X`, `... where col like '%X%'`) only matches artifacts that happen to
+  use the word. Anything that implements, teaches, or performs X while naming it
+  differently — or never naming it at all — returns zero hits and is reported as
+  absent.
+- **Why It Happened**: A large content bank was checked for duplicate subject
+  matter before adding new entries. Two candidate topics came back clean on a
+  `%keyword%` query and were approved as absent. Both were already present: one
+  existing entry described the condition entirely through its observable signs
+  and never used its name; another described the same phenomenon using a
+  different clinical term. Duplicates were authored on the strength of the clean
+  query, and were caught only because a later stage independently re-verified
+  instead of trusting the earlier "verified absent" claim.
+- **Solution**: Search the *behaviour* and the *shape*, not the label — the
+  distinctive combination of attributes, the surrounding actions, the values
+  involved — and then **read the candidate matches** rather than counting rows.
+  Treat zero hits from a single name-based query as "no evidence", never as
+  "evidence of absence".
+- **Preventive Rule**: **A name-based query can prove presence but never
+  absence.** Before acting on "no results", ask what the thing would look like
+  if it were written by someone who used different vocabulary — then search for
+  that. Prefer two orthogonal queries over one keyword, and read matches instead
+  of trusting a count.
+- **Similar Situations**: Checking whether a helper/util already exists before
+  writing a new one (the existing one has a different name); dead-code and
+  unused-dependency detection where usage is dynamic or aliased; "is this
+  endpoint used anywhere?" against callers that build the path by concatenation;
+  duplicate-bug triage in an issue tracker where the same defect is described in
+  different words; license and secret scanning that greps for known markers;
+  checking whether a migration or config change was already applied.
+
+### LL-0071 — An agent's report that it did something is not evidence that it did
+
+- **Root Cause**: Delegated work is judged by the worker's summary rather than
+  by the artifact. The summary is written from intent and memory, so it is
+  sincere and confident even when the work did not land, landed partially, or
+  landed differently than described.
+- **Why It Happened**: Across one multi-agent run, three distinct instances:
+  (1) a worker reported it had "avoided" a specific existing item's framing, and
+  had in fact reproduced that item's exact premise in a secondary field;
+  (2) a worker killed mid-run by a quota limit left a final message describing
+  the *next* step it was starting, which read as though the earlier steps were
+  complete — inspection showed none of them had been written; (3) the
+  orchestrator's own change-detection heuristic reported 15 modified units, of
+  which 14 were wrong in both directions (13 false positives from a truncation
+  artifact, plus one real change it missed entirely because that change did not
+  touch the field being compared).
+- **Solution**: After any delegated step, verify against the artifact itself —
+  read the file, query the database, diff against a snapshot taken before the
+  step. Take that baseline snapshot *before* delegating, so the comparison is
+  exact rather than heuristic. Where the work has a machine-checkable property
+  (a count, a schema, a hash), assert it.
+- **Preventive Rule**: **Trust the artifact, never the report — including your
+  own.** A status field, a completion notification, and a summary are all claims
+  about the work, not the work. This applies with equal force to the
+  orchestrator's own verification shortcuts: check that your check is right
+  before you act on it.
+- **Similar Situations**: CI jobs reported green that skipped the suite; a
+  deploy tool reporting success while serving the previous build; "migration
+  applied" flags that don't match the schema; a subprocess whose exit code is 0
+  because the failure happened in a pipe; any background or long-running task
+  that reports progress separately from its output; hand-offs between humans
+  where "that's done" means "I finished my part of it".
+
+### LL-0072 — Every unit can be individually correct while the *set* leaks a pattern, and replacing the pattern is not removing it
+
+- **Root Cause**: Correctness is checked per unit, but exploitability is a
+  property of the collection. A generator that makes each item defensibly right
+  can still produce a set where some incidental attribute — position, length,
+  ordering, which option is never chosen — predicts the answer without the
+  content being read at all.
+- **Why It Happened**: Three independent reviewers of one generated batch each
+  found a different set-level regularity that no single-item check could see: an
+  option class that was correct in none of nine items; the intended answer being
+  the longest option in every item of a group; and a classification sequence
+  that alternated perfectly across three items. Every individual item passed
+  review. Worse, an earlier round had "fixed" a comparable bias by imposing a
+  strict rotation — which was exactly as predictable as the bias it replaced,
+  because it relocated the signal instead of destroying it.
+- **Solution**: Add a set-level pass that asks "what property of this collection
+  predicts the answer without reading it?" — distribution, position, length,
+  ordering, and never-selected classes. When fixing, verify the *replacement*
+  distribution is irregular rather than merely different: make the
+  never-correct class genuinely correct sometimes **while leaving it present
+  elsewhere**, and vary rank rather than just avoiding the extreme, or
+  "second-longest" simply becomes the new tell.
+- **Preventive Rule**: **Validate the batch, not only the item — and when you
+  break a pattern, check you have not authored a new one.** Any fix that
+  imposes a deterministic scheme (a rotation, an alternation, a fixed ratio) is
+  a relocated signal, not a removed one.
+- **Similar Situations**: Generated test fixtures where every "invalid" case
+  fails the same field; seeded or sampled data whose ordering encodes the label;
+  synthetic benchmarks where difficulty correlates with input length;
+  randomised A/B assignment that is balanced but cyclic; ID or token generation
+  that is unique per item yet sequential across the set; shuffled UI options
+  whose correct choice is always the most detailed one.
+
 ---
 
 <!--
