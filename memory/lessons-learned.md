@@ -2876,6 +2876,41 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   that is unique per item yet sequential across the set; shuffled UI options
   whose correct choice is always the most detailed one.
 
+### LL-0073 — A one-sided assertion cannot tell "restored" from "never changed"
+
+- **Root Cause**: A rollback drill asserted that the live database's migration
+  count matched its pre-upgrade value after rollback. That assertion passes
+  identically whether the restore genuinely rolled a migrated database back, or
+  nothing ever migrated in the first place. The test could not distinguish
+  success from a no-op, so a green result carried far less information than it
+  appeared to.
+- **Why It Happened**: The assertion was written from the perspective of the
+  desired end state ("the database is back where it started"), which is the
+  natural way to write it. But the end state is shared by the success path and
+  the do-nothing path. Nothing in the test observed the *intermediate* state
+  that only the success path produces.
+- **Solution**: Assert both sides of the transition. The drill now checks that
+  the live database is back to 224 migrations **and** that the failed-upgrade
+  copy set aside during rollback shows 230. Neither number alone rules out the
+  no-op; the pair can only be produced by real migrations that were really
+  rolled back. Relatedly, the same drill refuses to run at all when its target
+  version equals the installed version — it prints `SCENARIO 2 SKIPPED` with a
+  reason rather than executing a sequence of no-ops and reporting every
+  assertion green.
+- **Preventive Rule**: **For any test of a reversible operation, ask what the
+  assertions would do if the operation had never run.** If they would still
+  pass, the test proves nothing yet. Capture evidence of the intermediate state
+  — the discarded artifact, the moved-aside directory, a counter observed at
+  peak — not only the restored end state. And make a test that cannot
+  meaningfully run say so loudly instead of passing quietly.
+- **Similar Situations**: Undo/redo tests that only compare the final document
+  to the original; idempotency tests where the second run's no-op is
+  indistinguishable from the first run having failed; cache-invalidation tests
+  asserting a fresh read matches the old value; transaction-rollback tests that
+  only check the row is unchanged; migration up/down tests that never assert the
+  schema actually changed in between; retry logic verified only by the eventual
+  success; feature-flag rollbacks checked only against the pre-flag behaviour.
+
 ---
 
 <!--
