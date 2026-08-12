@@ -2949,6 +2949,83 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   protection and gets read as an outage; verifying an email render in a client
   that has already cached the assets.
 
+### LL-0075 — An absolutely-positioned pseudo-element on a scroll container is part of what scrolls
+
+- **Root Cause**: A horizontally-scrolling data table was given a right-edge
+  gradient to advertise the scroll, written as `after:absolute after:right-0` on
+  the same element that carried `overflow-x-auto`. An absolutely-positioned child
+  of a scroll container is positioned against that container's *padding box*,
+  which is the scrolled coordinate space — so the fade sat correctly only at
+  `scrollLeft === 0`. The moment a user scrolled, it detached from the right edge
+  and drifted left as a stray band floating over the data it was meant to frame.
+- **Why It Happened**: The element that scrolls and the element that decorates
+  were collapsed into one because they *look* like one thing in the markup, and
+  the mistake is invisible in the state everyone tests: the unscrolled one. Every
+  screenshot, every default render, and every jsdom test showed it correct. It
+  is only wrong after an interaction that no unit test performs and no static
+  capture reaches.
+- **Solution**: Separate the two responsibilities. An outer, non-scrolling
+  wrapper is `relative` and owns the `after:` fade; the inner element keeps
+  `overflow-x-auto` and — critically — keeps `role`, `aria-label`, `tabIndex`
+  and the focus ring, because **the focusable thing must be the scrollable
+  thing**. Moving the a11y attributes up to the wrapper would trade one defect
+  for a worse one: a focus ring on an element that does not scroll.
+- **Preventive Rule**: **Never place an absolutely-positioned overlay on the
+  element that owns `overflow`.** Put the overlay on a non-scrolling parent and
+  let the scroller be a pure scroller. When reviewing any scroll affordance,
+  ask what it looks like at `scrollLeft`/`scrollTop` *not* zero — and note the
+  corollary defect: an unconditional fade also lies on wide screens, advertising
+  a scroll that does not exist, because CSS alone cannot ask "does this
+  overflow?" without JS measurement or scroll-state queries.
+- **Similar Situations**: Sticky table headers inside an `overflow` wrapper;
+  "scroll for more" chevrons; drop-shadows on carousels; a floating clear button
+  inside a scrollable input; sticky column freezing in data grids; any
+  `position: absolute` badge on a scrollable list; the same bug vertically, where
+  a bottom fade rides up over content as the user scrolls down.
+
+---
+
+### LL-0076 — A runtime upgrade can ship a built-in global that shadows your test environment's implementation
+
+- **Root Cause**: A frontend test suite began failing 22/22 in one file with
+  `Cannot read properties of undefined (reading 'clear')` on `localStorage`,
+  while CI stayed green. Node 26 had introduced an **experimental built-in
+  `localStorage`** that requires a `--localstorage-file` flag to function.
+  Without the flag it exists as a global but is undefined, and its mere presence
+  shadowed the one jsdom provides. CI was unaffected only because it pins an
+  older Node.
+- **Why It Happened**: The failure named the application's own API, so it read
+  as "our test setup is broken" rather than "the runtime changed underneath us".
+  Nothing in the project had changed. The environment had — and a version
+  manager was absent, so the local runtime had silently drifted ahead of the
+  pinned one. The decisive clue was a warning Node prints itself and which is
+  easy to scroll past: *"localStorage is not available because
+  --localstorage-file was not provided."* The real scope was also wider than the
+  symptom suggested: it was not one test file's problem, it was that
+  `window.localStorage` was undefined for *every* test, which would have
+  silently blocked any future feature that persisted state.
+- **Solution**: Define the missing implementation in the test setup only when the
+  runtime has left one missing — `if (!window.localStorage) { …jsdom-backed
+  stub… }` — mirroring an existing `matchMedia` stub in the same file. The guard
+  is the whole design: it is a no-op on the pinned runtime, so it cannot mask a
+  real implementation or make local and CI diverge in the other direction. Prove
+  both directions by running the suite under *both* runtimes.
+- **Preventive Rule**: **When a test-only failure names a platform API, suspect
+  the runtime before the code — and read the runtime's own warnings.** Establish
+  the failing baseline *before* changing anything, so you know which failures are
+  yours. Any environment stub must be guarded on absence and verified as a no-op
+  on the pinned version. And note that a needed runtime is usually reachable
+  without installing it (`npx node@24`, `docker run node:24`), so "I don't have
+  that version" is rarely a reason to skip verifying against the pinned one.
+- **Similar Situations**: `fetch`, `structuredClone`, `crypto.randomUUID`,
+  `AbortSignal.timeout` or `Array.prototype.toSorted` landing natively and
+  shadowing a polyfill; a browser shipping a global that collides with a library
+  export; a language runtime adding a keyword or builtin that shadows a
+  user-defined name; a base Docker image bumping and changing a default; any
+  "works in CI, fails locally" where CI pins a version and the developer does not.
+
+---
+
 ---
 
 <!--
