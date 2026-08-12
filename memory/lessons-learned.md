@@ -2911,6 +2911,44 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   schema actually changed in between; retry logic verified only by the eventual
   success; feature-flag rollbacks checked only against the pre-flag behaviour.
 
+### LL-0074 — A reproduction is only evidence if your harness matches the user's
+
+- **Root Cause**: An invite-funnel investigation stalled on a screen reading
+  "Access restricted — sign ups are currently disabled", reproduced twice, on
+  two separate invitation tickets. It was taken as proof that invited users
+  could not sign up. It was an artifact of the tester: the browser already held
+  a signed-in session, and an auth provider cannot create a second account
+  inside one. In a private window the same ticket showed the sign-up form
+  immediately. No real invitee had ever seen the error.
+- **Why It Happened**: The reproduction was stable and repeatable, which reads
+  as strong evidence — and normally is. But *stability only establishes that the
+  harness is deterministic, not that it resembles production*. Every repeat used
+  the same contaminated session, so repeating it added confidence without adding
+  information. The same session also produced two lesser versions of the mistake:
+  an automated browser was served an interactive bot challenge (real users get an
+  invisible pass), and `curl` got a 403 from the same host — both treated,
+  briefly, as signal about users.
+- **Solution**: The disproof came from data, not from another reproduction. The
+  provider's own records showed invitations created in the *same second* — seven
+  accepted, three not — which is impossible if the flow is globally broken. That
+  reframed the question from "why is it broken" to "what is different about my
+  attempt", and the session was the only candidate. Re-run in a clean session; it
+  worked.
+- **Preventive Rule**: **Before trusting a reproduction, list every way your
+  environment differs from the affected user's — session state, cookies,
+  automation flags, IP reputation, admin privileges — and neutralise them.** For
+  anything auth- or onboarding-related, reproduce in a private window by default;
+  a signed-in tester is not a new user and cannot simulate one. And when a
+  reproduction conflicts with production data, believe the data: the data covers
+  many users, the reproduction covers one contaminated environment.
+- **Similar Situations**: Testing a paywall or trial-expiry flow while holding an
+  active subscription; checking a first-run or onboarding tour on a machine that
+  has already completed it; verifying a permissions error as an admin; testing
+  localisation with a forced locale header; "cannot reproduce" on a bug that only
+  affects logged-out visitors; scraping or link-checking that trips bot
+  protection and gets read as an outage; verifying an email render in a client
+  that has already cached the assets.
+
 ---
 
 <!--
