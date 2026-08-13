@@ -3296,10 +3296,19 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   md5-ing the stored code back out and comparing it to the source file.
   (`workflow_published_version` existed but held no row for this workflow, so
   the publish path was not in use.)
+- **Follow-up (same day)**: importing a NEW workflow via
+  `n8n import:workflow` creates the `workflow_history` row but leaves
+  `workflow_entity.activeVersionId` **NULL**. Setting `active=1` was not
+  enough — the scheduler silently skipped it, the boot log activated every
+  other workflow, and the row still read `active=1`, so the database and the
+  running state disagreed with no error anywhere. Pointing `activeVersionId`
+  at the existing history version fixed it. **Activation follows the pointer,
+  not the `active` flag**, which makes `active=1` a claim rather than a fact.
 - **Preventive Rule**: Before editing any application's database directly,
   look for a history/versions/published table and for a column that *points*
   at it; assume the runtime may read through the pointer rather than the base
-  row. Verify by reading the value back and hashing it against the intended
+  row. After any activation change, verify against the runtime's own boot log
+  or API, never against the flag you just wrote. Verify by reading the value back and hashing it against the intended
   source — "UPDATE … 1 row" only proves you wrote somewhere. Stop the
   container first (LL-0025), and after restarting confirm the boot log
   re-activates everything it did before.
