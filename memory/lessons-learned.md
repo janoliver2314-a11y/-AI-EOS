@@ -3134,6 +3134,47 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
 
 ---
 
+### LL-0080 — A background browser tab does not render visibility-gated content, and the symptom looks like a lazy-load bug
+
+- **Root Cause**: A browser-automation run drove a Chrome tab that was never
+  brought to the foreground. The target application gates hydration of its feed
+  on `document.visibilityState`, so every item stayed an unhydrated placeholder.
+  Eight rounds of scrolling with waits produced exactly one hydrated item, and
+  the extracted content was empty or wrong.
+- **Why It Happened**: The failure presents as a *content* problem — empty DOM
+  nodes, "the feed won't lazy-load past the first item" — so the instinctive
+  responses are to scroll more, wait longer, or blame the selector, and all
+  three were tried. Nothing in the tooling surfaces the tab's visibility:
+  navigation reported success, the page had a valid DOM, and
+  `document.hasFocus()` returned **true** while `visibilityState` was
+  `"hidden"`, so the one signal that was checked gave false reassurance. A
+  prior note recorded the workaround at symptom level ("the pane must be
+  visible") without the mechanism, so the diagnosis was re-derived from scratch
+  rather than applied.
+- **Solution**: Queried `document.visibilityState` directly. It returned
+  `"hidden"`; the human fronted the tab; it became `"visible"` and the feed
+  hydrated immediately with no additional scrolling. Total fix time once the
+  right question was asked: one query.
+- **Preventive Rule**: **Before debugging "the content won't load" in browser
+  automation, assert the environment renders at all — check
+  `document.visibilityState === "visible"`, and treat a hidden tab as a broken
+  precondition rather than as slowness.** Generally: when driving a UI you
+  cannot see, verify the preconditions that UI's own rendering depends on
+  (visibility, viewport size, focus, reduced-motion or headless flags) before
+  trusting any negative observation about its content — an unrendered UI
+  produces confident, wrong evidence. And when recording a workaround in memory
+  or a runbook, capture the *mechanism*, not just the symptom: a symptom-level
+  rule cannot be checked with a query, so it gets re-derived at full cost.
+- **Similar Situations**: IntersectionObserver-driven infinite scroll;
+  `requestAnimationFrame` loops, CSS animations and video that only advance
+  while visible; timers throttled in background tabs; polling that silently
+  stops when a tab is backgrounded; headless runs where an element is
+  "invisible" because the viewport has zero height; screenshot tests against a
+  minimized or offscreen window; any automation asserting absence of content it
+  never gave the page a chance to draw.
+
+---
+
 ---
 
 <!--
