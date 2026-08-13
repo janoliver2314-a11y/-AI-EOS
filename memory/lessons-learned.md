@@ -3024,6 +3024,114 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   user-defined name; a base Docker image bumping and changing a default; any
   "works in CI, fails locally" where CI pins a version and the developer does not.
 
+### LL-0077 — A test whose red state depends on luck is not a gate, however behavioral its failure
+
+- **Root Cause**: A plan's TDD failing-step proved a repeat-avoidance fix by
+  answering one session of 10 questions, redrawing the same category, and
+  asserting no overlap. Against ~150 candidates a stateless draw repeats only
+  about one seat in fifteen, so the pre-fix run **passed four times in five**.
+  Run once, as TDD scripts usually are, it would have been recorded as a red
+  state that had in fact never discriminated.
+- **Why It Happened**: The code under test is randomized, and the assertion was
+  written against the *population* the feature will eventually stress rather
+  than one where the difference is forced. Both LL-0028 and mutation testing
+  assume a deterministic verdict: neuter the logic, watch the test fail. Neither
+  says what to do when neutering the logic makes the test fail only *sometimes*
+  — which reads exactly like flake and gets retried away.
+- **Solution**: Shrank the population until the correct implementation has no
+  freedom: the narrowest published slice held 13 items, so draining 8 leaves
+  exactly 5 unseen and the assertion becomes `drawn == those 5`. That is
+  deterministic under the fix and lands by chance once in 1,287 runs. Verified
+  by running the red state **five** times (5/5 failed) and the neutered
+  implementation **eight** times (8/8 failed) — not once each. A second, weaker
+  test in the same file was rewritten the same way after review measured its
+  lazy-pass rate at ~24%.
+- **Preventive Rule**: **When the code under test is randomized, compute the
+  probability that your assertion passes against the broken implementation
+  before you trust a single red run — and run the red state several times.** If
+  that probability is not negligible, do not add retries; change the fixture so
+  the correct behaviour is forced, then state the residual odds in a comment so
+  the next reader can judge the gate. Prefer set equality on a small pool over
+  disjointness on a large one: shrinking the population is what converts a
+  statistical tendency into a deterministic assertion.
+- **Similar Situations**: Sampling, shuffling, load-balancing and cache-eviction
+  code; "assert the shuffled order differs" on a 3-element list; retry and
+  backoff tests that pass because the first attempt happened to succeed; A/B
+  bucketing assertions; property-based tests run at a case count too low to hit
+  the interesting branch; any assertion of the form "X did not appear" where X
+  was unlikely to appear anyway.
+
+### LL-0078 — An arithmetic argument that a user-facing problem exists is a hypothesis, and the query that settles it usually takes minutes
+
+- **Root Cause**: A feature was designed, specced, planned, implemented,
+  reviewed and merged to remove repeated practice questions, on the strength of
+  a table showing that by a student's fifth session more than half the questions
+  would be ones they had already answered. The repeat rate was finally
+  *measured* after the pull request was open: **1.7%** overall, 1.1% for the
+  heaviest student. The table's assumptions — 60-question single-category
+  sessions — did not describe how anyone actually used the product, which was
+  10-question draws across a pool of 1,735.
+- **Why It Happened**: The arithmetic was correct, internally consistent, and
+  persuasive, so nobody asked what it was conditioned on. The data needed to
+  check it was one SQL query against a table already being read for other
+  purposes. The model was written into the spec as a table of numbers, which
+  made it *look* like a measurement to every later reader.
+- **Solution**: Measured drawn-versus-distinct questions per user; recorded the
+  real figures in the spec beside the model, labelled which is which, and stated
+  plainly that the work is insurance against a future state rather than a fix
+  for a present defect — so a flat metric afterwards is not read as failure. The
+  work still shipped: it was cheap, correct, and the projected problem is real
+  once usage grows. Only the *framing* was wrong.
+- **Preventive Rule**: **Before building a fix for a quantitative user-facing
+  problem, measure the problem.** State the model's assumptions out loud and
+  check each against real usage — session size, filters, population — because a
+  model whose inputs are wrong produces a confident number, not an obvious
+  error. Never let modelled figures sit in a spec formatted like measured ones;
+  label them, and put the measurement next to them when it arrives. And note the
+  companion trap: **a change can move its own headline metric the wrong way on
+  purpose** — deliberately resurfacing missed questions *raises* the repeat
+  rate — so define the metric to separate the defect from the feature, or the
+  improvement will report as a regression.
+- **Similar Situations**: Performance work justified by big-O rather than a
+  profile; a cache added for a hit rate nobody sampled; capacity planning from
+  peak-times-headroom instead of observed traffic; "users will hit the rate
+  limit" without checking the distribution; any funnel or retention projection
+  built from a per-step rate that was assumed rather than queried.
+
+### LL-0079 — Promoting an optional code path to the default promotes its latent bugs with it
+
+- **Root Cause**: A helper that read a learner's answer history used two
+  unpaginated selects. The backing API caps an unpaginated read at 1,000 rows
+  and returns success with no indication that a tail was dropped. This had been
+  acceptable for months because only an opt-in mode called it. The change under
+  review made it the input to **every** draw — silently converting a dormant
+  truncation into a live one that would reintroduce the exact defect the change
+  existed to remove, and could resurface an item the learner had already
+  mastered, because "latest verdict" would be computed over a partial history.
+- **Why It Happened**: The diff did not touch that helper, so neither the
+  implementation nor the per-task reviews looked at it — the change was in who
+  *calls* it, which a line-oriented diff does not show. The codebase already had
+  a documented pagination rule and a named constant for it a few lines away; the
+  helper predated the rule and nothing re-examined it when its caller set grew.
+- **Solution**: A whole-branch review (as opposed to per-task review) caught it
+  by reasoning about the new call graph rather than the changed lines. Both
+  reads were paginated with an explicit sort key so pages cannot overlap or
+  skip, with tests that model the cap and fail against both an unpaginated and
+  an unordered read. Fixed on the same branch, before the promotion shipped.
+- **Preventive Rule**: **When a change widens who calls something — a flag
+  becoming the default, an opt-in path becoming automatic, an internal helper
+  becoming public — re-audit that callee's assumptions against its new blast
+  radius, even though its source is untouched.** Ask what was merely tolerable
+  at the old volume or old caller set. Make the review's unit the call graph,
+  not the diff; this class is invisible to per-task review by construction.
+- **Similar Situations**: A beta flag flipped on for everyone; a debug or admin
+  endpoint exposed to end users; a nightly batch query moved onto a request
+  path; a helper with an in-memory cache, a fixed timeout, an unbounded
+  accumulator or an N+1 that only mattered at low call volume; a test double
+  promoted to production use; a dependency's optional feature becoming its
+  default on upgrade.
+
+
 ---
 
 ---

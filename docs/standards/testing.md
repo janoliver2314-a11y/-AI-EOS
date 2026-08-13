@@ -59,6 +59,20 @@ configuration changes are exempt unless they affect runtime behavior.
    (A/B two configurations): differing outcomes convict the product. When a
    suite provably *cannot* observe a behavior, state the proxies used and
    what remains unproven rather than letting a green run imply coverage.
+9. **When the code under test is randomized, force the outcome rather than
+   trusting a red run.** Rule 5 bans unseeded randomness *in* a test, but
+   says nothing about testing a component that is random by design
+   (sampling, shuffling, bucketing, eviction, retry). There, both TDD's
+   failing step and a mutation check return a *probabilistic* verdict: a
+   real gate can pass against the broken implementation, and the miss reads
+   exactly like flake. Before trusting a single red run, compute the odds
+   your assertion passes against the broken code. If they are not
+   negligible, shrink the population until the correct behavior has no
+   freedom — prefer set equality on a small pool over disjointness on a
+   large one — then run the red state several times, not once, and record
+   the residual odds in a comment so the next reader can judge the gate.
+   Never buy the pass with a retry (rule 6). (`memory/lessons-learned.md`
+   LL-0077.)
 
 ## Design Decisions
 
