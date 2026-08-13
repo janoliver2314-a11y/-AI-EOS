@@ -3175,6 +3175,170 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
 
 ---
 
+### LL-0081 — A client cannot infer a deletion from a row's absence; tombstone ids must travel explicitly
+
+- **Root Cause**: A sync API soft-deleted rows (`deleted_at`) and filtered them
+  out of the pull payload, with a source comment stating this made "the
+  deletion propagate to other devices". The client's merge only added and
+  updated rows *present* in the payload; it never removed local rows missing
+  from it. A row deleted on the laptop stayed on the phone indefinitely, and
+  the two devices silently disagreed about what existed.
+- **Why It Happened**: The server half looked finished — the column existed,
+  the intent was written down, and deletion worked perfectly on the device
+  that issued it (local removal plus a queued tombstone). The bug is invisible
+  on the machine you are testing on, because that machine is the one that
+  already applied the change. Nobody tested with a second client.
+- **Solution**: Return the tombstoned ids from the GET and apply them in the
+  merge. Unpushed local edits win over a remote delete — the queue is the only
+  copy that exists nowhere else — and re-pushing revives the row. Critically,
+  the *obvious* fix (prune local rows missing from the payload) would have
+  caused data loss: locally converted legacy rows are deliberately not queued
+  for upload and are also absent, so pruning would have deleted them before
+  their server twin arrived.
+- **Preventive Rule**: In any sync protocol, deletion must be an explicit
+  signal, never absence from a payload. Absence is ambiguous — it also means
+  "not created yet", "filtered", "paginated out", or "created locally and not
+  yet sent". Before writing "remove what is missing", enumerate every reason a
+  row can legitimately be absent; if that list has more than one entry, you
+  need an explicit tombstone. Test deletion with two clients, because one
+  client can never observe this failure.
+- **Similar Situations**: Offline-first and CRDT/last-write-wins syncs, cache
+  invalidation, directory mirroring (`rsync --delete`), incremental ETL where a
+  missing source row could mean "deleted" or merely "not in this batch", and
+  any reconciliation loop that treats desired-state absence as intent to
+  destroy.
+
+---
+
+### LL-0082 — An action creator named after a state field silently replaces it when both are spread into one object
+
+- **Root Cause**: A React context value was assembled as `{...state,
+  ...actions}`. One creator, `syncError`, shared a name with the `syncError`
+  state field. Spread second, the function overwrote the string. Every
+  consumer then read a function — always truthy — so the UI took the error
+  branch on every render, showing a permanent "SYNC ISSUE" on every device
+  while sync was in fact healthy.
+- **Why It Happened**: Both names are the natural one: the field *is* the
+  error, the creator *sets* the error. The collision produces no error, no
+  warning, and no type failure in plain JS. It also looked correct from the
+  dispatching side, which destructured the same name and got exactly the
+  function it wanted. And the app still worked — only the indicator lied,
+  which reads as a cosmetic quirk rather than a bug.
+- **Solution**: Renamed to `setSyncError` and moved the creators next to
+  `initialState` so the shared namespace is visible in one place. A test now
+  asserts the two key sets are disjoint, and that the merged value exposes the
+  error as a value rather than a function.
+- **Preventive Rule**: If state and actions are merged into one object, they
+  share a namespace — assert in a test that their key sets are disjoint, since
+  nothing else will tell you. Prefer verb-prefixed creators (`setX`, `clearX`)
+  or nest them (`{...state, actions}`). Note the failure shape: a truthy
+  function standing in for a value fails *silently and always*, so the symptom
+  is a constant wrong state rather than an intermittent one — a UI element
+  that never changes deserves as much suspicion as one that flickers.
+- **Similar Situations**: Redux `mapStateToProps` + `mapDispatchToProps` merged
+  into one props object, Zustand/Pinia stores mixing state and actions, any
+  `{...defaults, ...overrides}` config merge, and template rendering contexts
+  built from several sources.
+
+---
+
+### LL-0083 — Counting rows where the unit is people: one duplicate record read as two bodies
+
+- **Root Cause**: Coverage statistics counted absence *rows*. "OUT TODAY" was
+  the length of a filtered array, so a person with two live absences covering
+  the same day counted twice. A genuine duplicate record — the same leave
+  saved twice — would have reported one person as two bodies out for four
+  days. The same mistake was present in five functions: the headline count,
+  per-department coverage, returning-this-week, departing-soon, and
+  person-days-lost. The last summed days per absence, so two overlapping
+  absences billed the same day twice and the total could exceed the number of
+  days the window contains.
+- **Why It Happened**: Rows are what you have; people are what you mean. The
+  mapping is 1:1 in clean data, so the code is correct right up until the data
+  is not — and nothing in `filtered.length` names the unit it is counting, so
+  it reads as obviously right at every review.
+- **Solution**: Dedupe to the intended unit at the one definition every
+  consumer routes through, with an explicit, documented choice of survivor —
+  earliest start for "who is out", latest end for "who returns" (someone is
+  not back until the last chit ends), earliest start for "who leaves next" —
+  each tie-broken by id so row order can never change a count. Person-days
+  became the size of a set of distinct `(person, day)` pairs.
+- **Preventive Rule**: When a number is reported in a unit — people out,
+  customers affected, days lost — the code must reduce to that unit
+  explicitly. `rows.length` is only correct if something *enforces* a 1:1
+  row-to-unit mapping, and nothing usually does. Name the unit in the function
+  or its docstring. And when you find one instance, grep for its siblings
+  immediately: this is a habit of mind, not an isolated slip, so it is
+  reliably present more than once in the same file.
+- **Similar Situations**: Daily-active-users from event rows, "customers
+  affected" from ticket counts, seats from licence records, unique visitors
+  from requests, stock on hand from movements — every case where the honest
+  query was `COUNT(DISTINCT …)` and the written one was `COUNT(*)`.
+
+---
+
+### LL-0084 — n8n stores a workflow's nodes in two tables; patching only `workflow_entity` may not change what runs
+
+- **Root Cause**: n8n 2.34.4 keeps a workflow's nodes in **both**
+  `workflow_entity.nodes` and `workflow_history.nodes`, and
+  `workflow_entity.activeVersionId` is a foreign key into
+  `workflow_history(versionId)`. A direct database edit that updates only
+  `workflow_entity` can therefore leave the runtime loading the history copy —
+  succeeding as a write while changing nothing that executes.
+- **Why It Happened**: Older n8n had exactly one place to edit, and a script
+  written against that shape still reports "1 row updated". The extra columns
+  (`versionId`, `versionCounter`, `activeVersionId`) and tables
+  (`workflow_history`, `workflow_published_version`) arrived with the
+  publish/versioning feature, and nothing about the update failing to take
+  effect would be visible until the next scheduled run produced old output.
+- **Solution**: Patch both rows in one transaction, leave `versionId` and
+  `activeVersionId` untouched so the foreign key stays valid, and verify by
+  md5-ing the stored code back out and comparing it to the source file.
+  (`workflow_published_version` existed but held no row for this workflow, so
+  the publish path was not in use.)
+- **Preventive Rule**: Before editing any application's database directly,
+  look for a history/versions/published table and for a column that *points*
+  at it; assume the runtime may read through the pointer rather than the base
+  row. Verify by reading the value back and hashing it against the intended
+  source — "UPDATE … 1 row" only proves you wrote somewhere. Stop the
+  container first (LL-0025), and after restarting confirm the boot log
+  re-activates everything it did before.
+- **Similar Situations**: Any tool with a draft-versus-published split
+  (Strapi, Directus, Sanity, Airflow's serialized DAG table), feature-flag
+  services with versioned configs, and anything exposing an
+  `activeVersionId` / `publishedRevisionId` pointer.
+
+---
+
+### LL-0085 — A deployed PWA serves the previous bundle after a deploy, so a working fix looks broken
+
+- **Root Cause**: `vite-plugin-pwa` with `registerType: 'autoUpdate'`
+  precaches the app shell. After a deploy, the first page load installs and
+  activates the new service worker, but the document keeps the assets it
+  already has; only the *next* load runs the new bundle. Verifying a
+  just-deployed fix on the first reload therefore tests the old code.
+- **Why It Happened**: Every other signal said the deploy had landed — build
+  green, deployment READY, the API returning new fields, the page reporting
+  "Synced". `skipWaiting` and `clientsClaim` make the update feel immediate,
+  but they govern *worker* activation, not the assets the current document
+  already loaded. It cost two separate false conclusions that a correct fix
+  had failed, and nearly a wasted debugging session.
+- **Solution**: Compare the loaded bundle filename against the build output
+  before judging behavior at all; force it by unregistering the worker and
+  clearing `caches` (leaving `localStorage`, which holds the offline queue),
+  or simply reload twice.
+- **Preventive Rule**: When verifying a deployed change in a service-worker
+  app, identify the running build *first* — hashed asset name or an explicit
+  version string — and only then judge behavior. Treat "the fix did not work"
+  as unproven until the running bundle is confirmed to contain it. Same family
+  as LL-0011 and LL-0026 (wrong build masquerading as missing code), different
+  mechanism: a precached shell rather than a stale server or wrong checkout.
+- **Similar Situations**: Any service-worker app, CDN edge caching with a long
+  `max-age`, mobile OTA bundles (Expo Updates, CodePush), and the browser
+  bfcache serving a page that never re-executed.
+
+---
+
 ---
 
 <!--
