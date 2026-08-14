@@ -256,9 +256,89 @@ user might not know the answer — "is the cloud data internally consistent"
 is not something to just ask about — it applies specifically when the user
 is the authoritative source for the fact in question.
 
+## Pattern: Freeze production-proven code during adjacent work, then unfreeze it deliberately with its own re-proof
+
+**Used in**: an eight-task branch adding a second managed service to an ops
+toolkit that already upgraded a production service backing a live campaign.
+The existing upgrade script had passed a two-scenario production rollback
+drill; the new work needed to sit beside it without endangering it.
+
+**Shape**:
+1. **Name the frozen artifact explicitly in the plan's global constraints**,
+   not in prose a task author might skim: "`upgrade-n8n.sh` is frozen for
+   Tasks 1-7." Repeat it in every task dispatch that touches the directory.
+2. **State the freeze in the exit criteria** so it is checked mechanically —
+   `git diff <base> -- upgrade-n8n.sh` must be empty. Reviewers verified this
+   every task; it caught nothing, which is the point.
+3. **Let the frozen file's defects accumulate as recorded findings** rather
+   than fixing them in passing. When the same defect was found and fixed in
+   the *new* script (a safety-net flag armed one line too late), it was logged
+   against the frozen one instead of being fixed there.
+4. **Unfreeze in its own task**, whose deliverable is the change *and* the
+   re-proof — not as a step inside a task about something else.
+5. **Sequence the re-proof so the new consumer validates the shared code
+   first.** The extracted helpers were proven by the new script's drill before
+   the frozen script was moved onto them, so a failure would implicate the
+   extraction rather than the production path.
+6. **Gate the destructive re-proof on the operator.** Re-running a drill
+   against live production is their call, not the agent's; the task stops and
+   reports rather than deciding.
+
+**Why**: the alternative — "just fix it while we're in here" — spends the
+credibility of a drill that was expensive to run. Freezing converts every
+temptation into a logged finding, and the unfreeze task then has a single,
+reviewable diff whose blast radius is obvious.
+
+**Trade-off**: the frozen file carries known defects for the duration, and
+duplication accumulates in the meantime. Accept it only when the frozen
+artifact's proof is genuinely costly to regenerate (a production drill, a
+certification, a long soak). For ordinary code, fix it as you go.
+
+---
+
+## Pattern: Extract the shared abstraction after the second consumer exists, not before
+
+**Used in**: the same branch. The plan originally accepted duplication
+between two upgrade scripts to avoid touching the proven one; the operator
+chose extraction instead. The sequencing question — extract first, or write
+the second consumer and then extract — turned out to matter more than the
+decision itself.
+
+**Shape**:
+1. Write the second consumer **standalone**, mirroring the first where the
+   behavior genuinely matches. Do not reach for the abstraction yet.
+2. Harden it independently. This is where the two diverge honestly: the new
+   script grew bounded subprocess calls, process-group kills, and a distinct
+   pull-failure path that the original had no need for.
+3. **Extract only blocks that are identical modulo names.** A helper with a
+   boolean flag that switches between two behaviors is worse than two clear
+   call sites — say so in the task brief, because an eager implementer will
+   otherwise unify the divergences too.
+4. Move the *new* consumer over first and re-run its full proof. Commit that
+   separately, so the older consumer's move can be reverted on its own.
+5. Move the older consumer, in its own commit, then re-prove it.
+6. **Record the surviving divergences and why**, in the shared library's
+   header. The next reader's default assumption is that two scripts sharing a
+   lib behave alike; only a written note corrects it.
+
+**Why**: extracting from one consumer means guessing which parts are general.
+Here the guess would have been wrong twice — the brief asserted the helpers
+already lived in the shared lib when they were in fact private to one script
+with a caller-specific path hardcoded, and the "identical" blocks turned out
+to differ in four ways discovered only by writing the second consumer first.
+
+**Trade-off**: you write some code twice and refactor it once. That cost is
+real but bounded, and it is far smaller than an abstraction shaped around a
+single example that then has to be widened under a deadline.
+
+---
+
 ## Status
 
-_Last reviewed: 2026-08-03, after adding the credential-handoff and
+_Last reviewed: 2026-08-14, after adding the freeze-and-unfreeze and
+extract-after-the-second-consumer patterns (from a subagent-driven branch that
+added a self-hosted vector store beside a production-proven upgrade script).
+Previously reviewed 2026-08-03, after adding the credential-handoff and
 ask-before-relaying-infeasible-data patterns (from a domain/Clerk production
 cutover session that also closed out a 200-item bank review). Previously
 reviewed 2026-07-27, when the discriminating-test pattern was added (from a

@@ -74,6 +74,23 @@ configuration changes are exempt unless they affect runtime behavior.
    Never buy the pass with a retry (rule 6). (`memory/lessons-learned.md`
    LL-0077.)
 
+10. **A skipped test must not be reportable as a passing one.** A suite that
+    cannot run a scenario — an unmet precondition, an environment without the
+    dependency, a version pair that does not exercise the path — must say so
+    in a way a human *and* a wrapper can both see: a distinct non-zero exit
+    code, and a marker on the same stream as the pass/fail counts. Two
+    failures of this shape were found in one project: a destructive drill
+    whose skip path printed a banner to stderr and then exited 0 with
+    "12 run, 0 failed" on stdout, and the same drill's sibling, which had
+    silently self-skipped its most important scenario on *every* run for
+    months because the condition it needed never held. A failure must always
+    outrank a skip, including when an allow-skip override is set. Conversely,
+    do not solve a spurious red by converting a genuine failure into a skip
+    unless you can gate the skip on evidence independent of the failing
+    signal — where "could not test" and "tested and broke" look identical,
+    defaulting to skip converts a real defect into a wave-through.
+    (`memory/lessons-learned.md` LL-0087, LL-0089.)
+
 ## Design Decisions
 
 - **Coverage percentage is not the goal; behavior coverage is.** A high

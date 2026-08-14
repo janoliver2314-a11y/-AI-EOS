@@ -3350,6 +3350,151 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
 
 ---
 
+### LL-0086 — macOS's bash 3.2 cannot parse `case` inside `$(...)`: it prints an error, exits 0, and assigns garbage
+
+- **Root Cause**: `/bin/bash` on macOS is 3.2.57 (frozen at the last GPLv2
+  release). A command substitution containing a `case`/`esac` statement —
+  `x="$(case $v in a*) echo yes ;; *) echo no ;; esac)"` — is a parse error
+  in that version. The damage is that it is a *non-fatal* one: bash writes
+  the error to stderr, the assignment still completes with an empty or
+  partial value, and the script's exit status stays 0.
+- **Why It Happened**: The shape is idiomatic in bash 4+, so it reads as
+  correct to anyone who learned shell on Linux or with Homebrew's bash first
+  on `PATH`. It was written into an assertion that checked whether a
+  destructive script had stopped a container. `bash -n` passes it clean — a
+  syntax check does not exercise the substitution — so the usual pre-flight
+  gate says nothing. The assertion silently compared against an empty string
+  and reported success.
+- **Solution**: Use a form 3.2 parses: `grep -qF`, a `[ ... ]` test, or
+  parameter expansion. Where a `case` is genuinely wanted, run it as a
+  statement and assign inside the branches rather than substituting the whole
+  block.
+- **Preventive Rule**: On macOS, treat `/bin/bash` as bash 3.2 and never
+  assume 4.x syntax, regardless of what `bash --version` on `PATH` reports —
+  scripts invoked as `bash foo.sh` or via a `#!/usr/bin/env bash` shebang may
+  resolve differently than your interactive shell. Do not rely on `bash -n`
+  to catch version-specific parse failures. When a shell assertion produces a
+  surprising empty value, check stderr for a parse error before debugging the
+  logic. Same family as LL-0035 (a check that cannot fail is not a check),
+  different mechanism: here the interpreter, not the logic, silently voided it.
+- **Similar Situations**: Any `#!/bin/sh` or `#!/bin/bash` script intended to
+  run on both macOS and Linux; CI that runs on Linux while developers are on
+  macOS (or the reverse); `sed`/`date`/`stat` BSD-vs-GNU flag differences,
+  which fail loudly and are therefore *easier* than this one.
+
+---
+
+### LL-0087 — A self-healing safety net repaired the damage before the assertion looked, so the test could not fail
+
+- **Root Cause**: A destructive upgrade script arms an `EXIT` trap that
+  restarts the service if the script dies while the service is down. A drill
+  asserted an ordering property — that a version lookup happens *before* the
+  container is stopped — by checking, after a forced failure, that the
+  container was still running. But if the ordering broke, the script stopped
+  the container, died, and the trap restarted it and confirmed it healthy
+  *before the process exited*. By the time the drill inspected, the container
+  was running. The assertion passed either way.
+- **Why It Happened**: The property under test and the recovery mechanism
+  observe the same variable — "is it running now" — so the recovery is
+  indistinguishable from the property holding. The safety net was added for
+  good reasons and is genuinely correct; it just also erases the evidence.
+  Mutation testing found it: relocating the lookup below the stop left the
+  drill green, 4 assertions passing on a mutated script.
+- **Solution**: Assert on evidence the recovery cannot manufacture. Two were
+  added: the run's output must not contain the "stopping <container>" log
+  line, and `docker inspect -f '{{.State.StartedAt}}'` must be unchanged
+  across the run. The second is stronger — it catches a stop/restart that
+  logs nothing.
+- **Preventive Rule**: When testing a system that repairs itself, never
+  assert on end state alone; the repair runs between the fault and your
+  observation. Assert on a trace the repair does not rewrite — a log line, a
+  monotonic timestamp, a call count, a generation counter. Ask explicitly:
+  "if this property broke, what would be *different* by the time I look?" If
+  the honest answer is "nothing", the assertion is decorative. Extends
+  `docs/standards/testing.md` rule 7's discriminate-or-it-is-not-a-gate idea
+  to systems with automatic recovery.
+- **Similar Situations**: Supervisors and restart policies (`systemd`,
+  Kubernetes liveness probes, `restart: unless-stopped`); retrying HTTP
+  clients that mask a first-attempt failure; transactions that roll back
+  cleanly so a constraint violation leaves no trace; any `finally`/`defer`
+  cleanup that restores the state a test then reads.
+
+---
+
+### LL-0088 — A failed read that degrades to an empty result lets verification certify data loss
+
+- **Root Cause**: A helper read a database's collection inventory and returned
+  it as JSON, for use as a before/after baseline around a destructive
+  upgrade: capture, upgrade, re-read, compare, roll back on mismatch. Three
+  separate paths could return an *empty* inventory when the read had actually
+  failed — an HTTP 200 with a malformed body, a per-item detail fetch that
+  timed out and defaulted its count to zero, and an empty response body, which
+  `jq` consumes with exit 0 and no output. Empty-compared-to-empty is a match,
+  so the upgrade concludes "nothing changed" and reports success over data
+  that may be gone.
+- **Why It Happened**: Each degradation was individually reasonable — a
+  `|| echo '{}'` here, a `2>/dev/null` there, a `// 0` default — and each was
+  written to make the *happy* path robust. The failure only appears when you
+  ask what the value is used *for*. All three were caught by review, in three
+  separate waves, in code that already carried a comment explaining why the
+  helper must never do this. Comments do not enforce.
+- **Solution**: The helper prints nothing and returns 1 whenever the read did
+  not genuinely succeed, distinguishing "the payload says zero items"
+  (`jq -e '(.result.collections|type)=="array"'`) from "there was no usable
+  payload". Callers abort rather than substituting a default, and the caller
+  that had a separate status probe was fixed too: the probe and the read are
+  different HTTP calls, so a 200 on the first does not license trusting the
+  second.
+- **Preventive Rule**: For any value that will be *compared* rather than
+  merely displayed, make "could not read" a distinct outcome from "read
+  successfully, and it is empty". Never let a default, a fallback, or a
+  suppressed error stand in for data you did not obtain. The test for whether
+  this matters: if the caller compares two reads and acts on equality, an
+  unreadable value that looks empty will match another unreadable value and
+  the action taken will be the dangerous one.
+- **Similar Situations**: `curl | jq` pipelines generally; ORM `.first()`
+  returning `None` for both "no row" and "query failed"; cache reads that
+  return a miss on a connection error; `git diff` returning empty because the
+  path was wrong; migration and backup verification of every kind.
+
+---
+
+### LL-0089 — Python's `HTTPServer` calls `socket.getfqdn()`, which hangs in a sandbox, so mock-based tests passed without ever running
+
+- **Root Cause**: `http.server.HTTPServer.server_bind()` calls
+  `socket.getfqdn()`, which performs a reverse-DNS lookup. In a
+  network-sandboxed shell that lookup blocks for 5+ seconds. A test harness
+  started the mock in the background and polled up to 5s for its port, timed
+  out with an empty port, and then pointed the code under test at a malformed
+  URL. Every request failed with connection-refused, which happened to satisfy
+  the assertions — so three failure-mode tests passed while exercising none of
+  the paths they named.
+- **Why It Happened**: The harness reported green, and the assertions it
+  contained were individually correct. Nothing distinguished "the mock served
+  a malformed body and the code rejected it" from "there was no mock and the
+  connection was refused". It was found only because a reviewer ran a mutation
+  check: reverting the fix under test left the suite at 0 failures, proving
+  the tests carried no signal.
+- **Solution**: Set `socket.getfqdn = lambda *a, **k: "localhost"` before
+  constructing `HTTPServer`. Additionally, assert that the mock actually came
+  up — a nonempty port and one successful probe request — before the test
+  proceeds, so a dead mock fails loudly rather than passing vacuously.
+- **Preventive Rule**: A test whose setup can fail *soft* must assert its
+  setup succeeded before asserting on behavior; otherwise the failure mode of
+  the harness masquerades as the success of the code. Always mutation-check
+  tests that depend on a fixture the test itself starts
+  (`memory/reusable-patterns.md`, discriminating-test pattern). Prefer
+  binding mocks to `127.0.0.1` with the FQDN lookup disabled in any sandboxed
+  or offline environment.
+- **Similar Situations**: `unittest.mock` patches applied to the wrong import
+  path (patch succeeds, nothing intercepted); testcontainers or docker-compose
+  fixtures whose readiness wait times out; WireMock/`nock`/`responses`
+  interceptors that never match and fall through to a real connection error;
+  any fixture started in the background and polled with a bounded wait.
+
+---
+
+
 <!--
 Template for new entries — copy this block:
 
