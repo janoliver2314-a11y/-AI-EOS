@@ -190,6 +190,20 @@ fixtures are symmetric or whose assertions are negative
 (`not.toHaveTextContent`, `assert x not in …`) — negative assertions go
 vacuous silently when the thing they name is reworded or removed.
 
+**When a mutant survives, read the arrangement before the assertion.** Step
+3 says a surviving mutant means the test does not discriminate; it does not
+say where the blindness lives, and the instinct is to strengthen the
+assertion. Often the fault is in the setup, which decided what was
+observable before any assertion ran — most reliably when the test resets
+the very state the mutant corrupts. A pair like arm/disarm tested as
+*arm(x) → disarm → arm()* cannot see a mutant that makes `arm()` inherit
+the previous value, because `disarm` already restored the default: the two
+implementations produce identical state. Invoke the setter twice with
+nothing in between (`docs/standards/testing.md` rule 11,
+`memory/lessons-learned.md#LL-0095`). Framework-level resets — `beforeEach`,
+fresh fixtures, auto-reset mocks — apply the same masking to every test in
+the file without appearing in any of them.
+
 ## Pattern: Credential handoff when Claude Code can't paste secrets itself
 
 **Used in**: a Clerk + Google OAuth production cutover, where a secret key, an

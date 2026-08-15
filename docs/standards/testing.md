@@ -91,6 +91,20 @@ configuration changes are exempt unless they affect runtime behavior.
     defaulting to skip converts a real defect into a wave-through.
     (`memory/lessons-learned.md` LL-0087, LL-0089.)
 
+11. **A test must not reset the state whose carry-over it is testing.** Where
+    one operation restores what another sets — arm/disarm, open/close,
+    set/clear, acquire/release, begin/rollback, cache set/invalidate — at
+    least one case must invoke the setter **twice with nothing in between**.
+    With the restorer in the middle, it is the restorer and not the code
+    under test that makes the assertion pass, and the mutant implementing the
+    exact fault ("inherit the previous value") survives while the suite stays
+    green. This extends rule 1 to the arrangement: a mutation check verifies
+    the assertion, but only the arrangement decides whether the fault was ever
+    observable. So when a mutant survives, suspect the setup before the
+    assertion. The same masking is supplied for free by `beforeEach`, fresh
+    fixtures, and auto-reset mocks — to every test in the file, silently.
+    (`memory/lessons-learned.md` LL-0095.)
+
 ## Design Decisions
 
 - **Coverage percentage is not the goal; behavior coverage is.** A high

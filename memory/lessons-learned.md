@@ -3562,6 +3562,19 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   service-specific timeout; error-handling middleware pulling a global config
   object; any review note containing the phrase "the other one has the same
   problem".
+- **Recurrence (2026-08-15, same repo, the rollback drills rather than the
+  scripts)**: same shape, opposite direction. The **qdrant** drill had already
+  been fixed to resolve its failed-upgrade directory by before/after set
+  difference, carrying a comment explaining why "the newest one that exists" is
+  the wrong question. The **n8n** drill it had been modelled on kept the
+  original `ls | tail -1`, and went on reporting a proven post-migration
+  rollback for runs that had set nothing aside. So the sibling that keeps the
+  bug is not always the copy — here the fix landed in the copy and the ancestor
+  was never revisited — and a written explanation sitting in the sibling file,
+  which is the strongest form this warning can take short of shared code, was
+  still not enough to propagate it. When a fix lands anywhere, the question
+  stays "who else has this exposure", and the file it was copied *from* is on
+  that list.
 
 ---
 
@@ -3673,6 +3686,92 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   error handling covering the errors seen so far; sanitisation applied to the
   inputs someone remembered; any rule phrased "all X must Y" and implemented as
   a hand-maintained list.
+
+---
+
+### LL-0095 — A mutation-test that resets between the two operations under test cannot see a stale-state fault
+
+- **Root Cause**: Two variables that a safety net reads together — a flag that
+  decides whether it refuses to start anything, and the reason string it prints
+  when it refuses — were paired into `arm`/`disarm` helpers so the reason could
+  never describe a window that had already closed. The property "arming without
+  a reason gets the generic default, never whatever the last window left
+  behind" was tested as *arm-with-reason → disarm → arm-without-reason*. The
+  mutant that implements exactly the fault being guarded against —
+  `reason="${1:-$reason}"`, inheriting the previous window's text — **survived**
+  the mutation pass. `disarm` had already reset the value to the default, so
+  "inherit the current value" and "use the default" produced the same string.
+- **Why It Happened**: The test was written to read as a realistic sequence
+  rather than to isolate the property, and the operation sitting in the middle
+  of that sequence was the *other half of the pair under test*. A restorer
+  between two setters neutralises precisely the fault a stale-state test
+  exists to catch, and the test still passes against the correct code, so
+  nothing about the green run hints at it. It surfaced only because the mutant
+  was run — and the first instinct on a surviving mutant is to interrogate the
+  assertion, when the fault here was three lines above it, in the setup.
+- **Solution**: Deleted the intervening `disarm` — *arm-with-reason →
+  arm-without-reason*, back to back — which killed the mutant and, separately,
+  matches the real shape of the code: the unknown-container-state abort arms
+  the guard, attempts a compose revert, and re-arms with what it then knows.
+  The realistic sequence and the discriminating one turned out to be the same
+  sequence; the intervening reset was neither.
+- **Preventive Rule**: When testing a pair where one operation restores what
+  the other sets — arm/disarm, open/close, set/clear, acquire/release,
+  begin/rollback, cache set/invalidate — at least one case must invoke the
+  setter **twice with nothing in between**. Otherwise the restorer, not the
+  code under test, is what makes the assertion pass. And when a mutant
+  survives, suspect the test's *setup* before its assertion: an assertion can
+  only observe what the arrangement left observable. Frameworks that reset
+  state automatically between cases (`beforeEach`, fresh fixtures, auto-reset
+  mocks) apply the same masking for free, to every test in the file.
+- **Similar Situations**: any stateful pair as above; leak/carry-over tests
+  that use one fixture per case; "the second call must not see the first
+  call's data" written with a teardown in between; idempotency tests that
+  reset between attempts; a `beforeEach` that re-seeds the exact field whose
+  contamination is being tested.
+
+---
+
+### LL-0096 — A deferred defect's severity gets read off the note instead of re-derived, and grouping them assigns one severity to all
+
+- **Root Cause**: Three follow-up items sat in a project README under a single
+  bullet: "smaller, all recorded", with the first item's justification —
+  provably unreachable code path, therefore a coherence gap and not a risk —
+  standing in the reader's mind for all three. Two of them deserved that.
+  The third did not: a rollback drill resolved the directory holding its
+  evidence with `ls -d data.failed-* | sort | tail -1`, which answers "the
+  newest one that exists" rather than "the one this run created". Residue from
+  an earlier failed run satisfied the drill's post-migration proof for a run
+  whose rollback had set nothing aside, and residue with a later-sorting stamp
+  hid a genuinely broken rollback behind a passing assertion. Both cases
+  exited **0** before the fix — a destructive-recovery drill reporting a proof
+  it had never observed.
+- **Why It Happened**: The three were found together, during one review, and
+  were written down together because that is when they were noticed. Grouping
+  by discovery time reads afterwards as grouping by severity. Every later
+  reader — including the session that wrote the follow-up plan, and the one
+  that eventually picked the work up — inherited the grouping and re-asked
+  "is this worth doing?" once for the bullet rather than once per item. The
+  bullet also stated its own conclusion ("coherence gap, not a risk"), which
+  is the most efficient way to stop the next reader from checking.
+- **Solution**: Fixed all three, and recorded the misfiling explicitly in the
+  README's Known limitations rather than quietly marking the item done — so
+  the next reader triaging a list inherits the correction rather than the
+  original judgement.
+- **Preventive Rule**: A deferred defect's severity is **re-derived when it is
+  picked up**, never read off the note; the note records what was observed, not
+  what it is worth. Never batch items of differing or unexamined consequence
+  under one backlog line — one line per item, each stating what an operator or
+  user would actually observe if it fired, in place of a verdict word. A
+  written conclusion ("cosmetic", "unreachable", "harmless", "known issue")
+  must carry the evidence for it inline, or it will be inherited instead of
+  tested. Note especially that "unreachable" and "harmless" are different
+  claims: the reachable one in this trio was the one that mattered.
+- **Similar Situations**: "minor"/"cosmetic" backlog labels; TODO comments
+  asserting their own severity; Known Issues sections; risk registers handed
+  over between owners; batched code-review comments filed under one heading;
+  any list where several findings share one justification sentence; a
+  reviewer's "nit:" prefix on something that turns out not to be one.
 
 ---
 
