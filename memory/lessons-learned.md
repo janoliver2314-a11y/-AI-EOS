@@ -3598,6 +3598,84 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
 
 ---
 
+### LL-0093 — A condition dismissed as a test flake was the same condition silently failing in production
+
+- **Root Cause**: A status check resolved "latest release" from GitHub's
+  *unauthenticated* REST API (60/hr per IP). With the quota spent the call
+  failed, the `available` version came back empty, `updateAvailable` computed
+  to `false`, and **no finding was emitted** — so the unattended weekly job
+  wrote a clean report for a stack it had never successfully asked about. The
+  same 403 also failed one test assertion, and that assertion was the only
+  visible symptom.
+- **Why It Happened**: The test failure was labelled a **known flake** and
+  documented with a workaround: "check the quota before believing the suite is
+  red". A flake is by definition a thing you route around, so once it had a
+  name and a workaround nobody asked what the same condition did on the
+  production path — which shared the same helper and ran unattended every week.
+  The documentation made it worse rather than better: it recorded that a
+  rate-limited window produced "a false *could not detect* finding". That was
+  wrong, and wrong in the comfortable direction — it produced no finding at
+  all, which is why two sessions passed without anyone noticing.
+- **Solution**: Authenticated the call with the token the machine's `gh` was
+  already holding (60/hr → 5000/hr, nothing stored in the repo, unauthenticated
+  fallback intact) so the condition is rare — and, the half that actually
+  matters, made an unresolvable version an explicit finding so any future
+  failure is loud rather than silent. The test assertion became a disjunction:
+  a clean version **or** a reported failure, with the second branch exercised
+  against a hermetic unreachable endpoint since it never runs while the real
+  one is up. Per the new `docs/standards/security.md` rule 8, the token is
+  passed through a `--config` file on stdin rather than `-H`, keeping it out of
+  argv.
+- **Preventive Rule**: Before writing "known flake" next to anything, trace the
+  flaky condition through the **production** code path and state in the same
+  note what it does there. A flake in a test that shares a helper with a
+  scheduled job is a production failure that happens to have a witness.
+  Separately: verify the effect you write down. A workaround note that asserts
+  a benign symptom is the most durable hiding place a wrong belief can find,
+  because every later reader treats it as already investigated.
+- **Similar Situations**: any quota-bearing or rate-limited third-party API;
+  tests sharing a client with a cron/scheduled job; "flaky in CI, fine locally"
+  network assertions; retries that mask a persistent outage; anything where an
+  empty result from a failed fetch flows into a boolean whose `false` means
+  "nothing to do".
+
+---
+
+### LL-0094 — An invariant applied to one of two symmetric fields is not applied
+
+- **Root Cause**: An amendment established "a failed detection must be
+  reported, never silently treated as up to date", implemented as three
+  hand-written checks over the `installed` field of three components. The
+  sibling field `available` — same record, same consumer, same consequence when
+  empty — got none of them, and neither did a fourth component added later. A
+  failed availability lookup was therefore indistinguishable from "no update
+  available", which is the exact outcome the amendment existed to prevent.
+- **Why It Happened**: The invariant was written from the example that
+  motivated it, a local tool that would not report its version. `installed` was
+  the field in that bug; `available` had the same shape but a different failure
+  mode (remote rather than local), so it never surfaced while thinking about
+  the original case. Nothing enumerated the set the rule was meant to cover, so
+  at review time "applied" and "applied to the case I was looking at" were
+  indistinguishable — N-1 hand-written checks read exactly like N.
+- **Solution**: Extended the check to `available` across all four components
+  through a small helper, so adding a component is one call rather than
+  remembering a rule, and covered it with a test that drives the real code path
+  with the remote endpoint unreachable.
+- **Preventive Rule**: When establishing an invariant over a **set** — fields
+  in a record, routes in a router, variants in an enum — write the set down,
+  and prefer a construct that iterates it over N hand-written checks. Where it
+  must be hand-written, have the test assert over the enumerated set, so a new
+  member fails loudly instead of inheriting silence. State the invariant in
+  terms of the set ("every version field"), never in terms of the example that
+  prompted it.
+- **Similar Situations**: validation applied to some request fields; auth
+  middleware on most routes; timeout/retry wrappers around most outbound calls;
+  error handling covering the errors seen so far; sanitisation applied to the
+  inputs someone remembered; any rule phrased "all X must Y" and implemented as
+  a hand-maintained list.
+
+---
+
 <!--
 Template for new entries — copy this block:
 

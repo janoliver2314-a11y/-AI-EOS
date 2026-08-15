@@ -34,6 +34,16 @@ Applies to all code, configuration, and automation in this repository.
    call site.
 7. **Security-relevant fixes get a `memory/lessons-learned.md` entry**
    (`CLAUDE.md` §15) without exception.
+8. **Never pass a secret as a command-line argument.** A process's `argv` is
+   readable by anything running as the same user (`ps`, and `/proc/*/cmdline`
+   on Linux) for as long as the process lives, so `-H "Authorization: Bearer
+   $TOKEN"` publishes the token to the machine for the duration of the request.
+   Prefer, in order: the tool's own stdin/config-file mechanism (`curl --config
+   -`, `gh` reading `GH_TOKEN`, `ssh-add`), then an environment variable scoped
+   to the single call, then a file with restrictive permissions. Rule 1 keeps
+   secrets out of the repo and rule 5 keeps them out of logs; this keeps them
+   out of the third channel, which is the one people forget (see
+   `memory/lessons-learned.md#LL-0093`).
 
 ## Design Decisions
 
