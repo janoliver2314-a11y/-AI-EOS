@@ -3775,6 +3775,90 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
 
 ---
 
+### LL-0097 — A tool's silence is not evidence until the tool is confirmed to observe the thing
+
+- **Root Cause**: A newly shipped browser telemetry feature appeared to send
+  nothing on page exit. The investigation opened the in-app browser's network
+  recorder, filtered for the endpoint, saw **no requests**, and concluded "the
+  client never dispatched the request" — then spent the next several steps
+  theorising about *why* dispatch would fail (a token awaited before `fetch`,
+  a CORS preflight during unload). Both theories were wrong and the feature
+  was never broken: that recorder does not capture **cross-origin** calls at
+  all. It had only ever shown same-origin document and RSC requests. The API
+  lives on a different host, so every single request the app made — including
+  the ones that had demonstrably succeeded minutes earlier — was invisible to
+  it.
+- **Why It Happened**: A negative result from an instrument reads as strong
+  evidence, because a positive result from the same instrument was trusted
+  moments before. But "this tool shows me requests" was never established —
+  only "this tool shows me *some* requests". The failure is asymmetric and
+  that is what makes it dangerous: the tool had been right about everything it
+  *did* show, so nothing about its output looked degraded. The absence was
+  then reasoned *forward* from, generating plausible mechanisms for a
+  phenomenon that did not exist.
+- **Solution**: Switched to an instrument known to observe the thing — the
+  server's own database rows and the platform's request logs, which had
+  recorded every request all along. Three controlled reproductions then showed
+  the exit path working, including a tab close with zero answers that
+  delivered its complete timeline.
+- **Preventive Rule**: Before treating "the tool shows nothing" as a finding,
+  produce a **known-positive** through that same tool: trigger an event you
+  are certain happens and confirm the tool reports it. If it cannot, the tool
+  does not observe this class of event and its silence means nothing. Prefer
+  the instrument closest to the effect being measured — the receiver's own
+  records over the sender's observers. And state the instrument's scope out
+  loud when reporting a negative: "no rows in the DB" and "nothing in this
+  network pane" are not the same claim.
+- **Similar Situations**: browser devtools filters that silently exclude a
+  request type; log searches scoped to the wrong service, deployment or time
+  window; `grep` over a directory the build actually reads from elsewhere;
+  metrics dashboards whose retention or sampling drops the window under
+  investigation; "no test failures" from a runner that collected no tests;
+  "no such process" from a container that is not the one serving traffic.
+
+---
+
+### LL-0098 — A probe that mutates the state under test contaminates every reproduction after it
+
+- **Root Cause**: An exit handler deduplicates itself with a closure flag —
+  `hiddenReported`, set when a hide is reported and cleared only on the
+  matching *visible* transition, so that one real exit firing two browser
+  events cannot be counted twice. To test it without a real tab switch, the
+  probe overrode `document.visibilityState` to `"hidden"` and dispatched a
+  synthetic event. That worked, and correctly set the flag. Restoring the
+  property afterwards fires **no** event, so the handler never ran its visible
+  branch and the flag stayed set. The next reproduction — this time a genuine
+  background transition — was therefore *correctly* deduplicated away, and
+  produced exactly the symptom being hunted: no event, no request, nothing.
+- **Why It Happened**: The probe was designed to observe the handler, and it
+  did — but observing it meant driving it, and driving it advanced a state
+  machine that outlives the probe. The contamination is invisible precisely
+  because the code is behaving correctly: a dedup flag doing its job is
+  indistinguishable, from the outside, from a handler that never fired. The
+  second run also *looked* like independent confirmation of the first
+  hypothesis, which is the worst possible outcome — a false positive that
+  raises confidence.
+- **Solution**: Reloaded the page for a fresh mount before the real
+  reproduction, which cleared the closure. That run passed immediately, and a
+  third — closing the tab outright — passed too, establishing the feature had
+  never been broken.
+- **Preventive Rule**: If a probe **drives** the code rather than only reading
+  it, treat every later observation in that process as contaminated until the
+  state is provably reset. Reload, remount, or restart between probe and
+  reproduction. Where a property is faked to trigger a path, restoring the
+  property is not enough — the *transition* the code listens for must also be
+  replayed, or the code's view of the world stays where the probe left it.
+  Prefer read-only observation (a passive listener, a log line) over
+  synthesised events when the handler carries state across invocations.
+- **Similar Situations**: dedup/idempotency flags, once-only guards, retry and
+  circuit-breaker counters, rate limiters, feature-flag caches, and
+  first-run/onboarding state; monkey-patched globals restored without
+  re-firing their change events; a test double left installed for later
+  assertions; manual DB edits made to force a code path, then not rolled back
+  before the next attempt.
+
+---
+
 <!--
 Template for new entries — copy this block:
 
