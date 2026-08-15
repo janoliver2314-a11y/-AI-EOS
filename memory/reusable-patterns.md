@@ -313,7 +313,12 @@ decision itself.
 3. **Extract only blocks that are identical modulo names.** A helper with a
    boolean flag that switches between two behaviors is worse than two clear
    call sites — say so in the task brief, because an eager implementer will
-   otherwise unify the divergences too.
+   otherwise unify the divergences too. "Identical modulo names" includes
+   **configuration** names: a block that reads one consumer's global by name is
+   identical to its sibling in every way that matters, and the reference is
+   removed by making it a parameter, not by declaring the block unshareable.
+   Getting this backwards is how a safety fix lands in one of the two places
+   that need it (`memory/lessons-learned.md#LL-0091`).
 4. Move the *new* consumer over first and re-run its full proof. Commit that
    separately, so the older consumer's move can be reverted on its own.
 5. Move the older consumer, in its own commit, then re-prove it.
@@ -331,13 +336,25 @@ to differ in four ways discovered only by writing the second consumer first.
 real but bounded, and it is far smaller than an abstraction shaped around a
 single example that then has to be widened under a deadline.
 
+**The failure mode on the other side of this trade-off**, learned later on the
+same pair of scripts: waiting for the second consumer is right, but the wait
+has to *end*. Once both consumers exist and one of them gets a safety-critical
+fix, "we deliberately kept these separate" turns from a sound decision into the
+reason the sibling keeps the bug. When hardening a shared-shape path, the
+trigger to revisit extraction is the fix itself — grep for siblings with the
+same exposure before choosing where it lives (`LL-0091`).
+
 ---
 
 ## Status
 
-_Last reviewed: 2026-08-14, after adding the freeze-and-unfreeze and
-extract-after-the-second-consumer patterns (from a subagent-driven branch that
-added a self-hosted vector store beside a production-proven upgrade script).
+_Last reviewed: 2026-08-15, after cross-referencing LL-0091 into the
+extract-after-the-second-consumer pattern — the same pair of scripts later
+showed the cost of leaving the extraction undone once a safety fix landed in
+only one of them. Previously reviewed 2026-08-14, after adding the
+freeze-and-unfreeze and extract-after-the-second-consumer patterns (from a
+subagent-driven branch that added a self-hosted vector store beside a
+production-proven upgrade script).
 Previously reviewed 2026-08-03, after adding the credential-handoff and
 ask-before-relaying-infeasible-data patterns (from a domain/Clerk production
 cutover session that also closed out a 200-item bank review). Previously

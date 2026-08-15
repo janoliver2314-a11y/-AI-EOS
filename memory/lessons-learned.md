@@ -3495,6 +3495,109 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
 ---
 
 
+### LL-0090 — A scope constraint that excludes the test directory ships the fix without the test that holds it
+
+- **Root Cause**: A task brief limited edits to a fixed file list to protect a
+  production-proven script during adjacent work. The fix — anchoring a pattern
+  match to the end of a failure string — was proven against a scenario built in
+  a **scratch copy** of the hermetic test harness, because the harness file was
+  outside the allowed list. The scratch copy died with its temp directory, so
+  the fix shipped with no committed test: reverting it to the old
+  both-sides-wildcarded pattern left the entire suite green.
+- **Why It Happened**: The scope constraint was correct and had a good reason.
+  Its cost was invisible because the fix *was* proven — thoroughly, repeatedly,
+  just not durably. At the moment of commit, "I verified this" and "this is
+  protected by a committed test" felt like the same state, and nothing in the
+  workflow distinguished them.
+- **Solution**: Committed the reproducing scenario afterwards as its own commit,
+  and mutation-tested it: restoring the pre-fix pattern fails exactly that
+  scenario's four assertions and leaves the other nine green, proving the new
+  scenario is the one carrying the signal.
+- **Preventive Rule**: A scope constraint may freeze implementation files; it
+  must never exclude the test that will hold the change. A brief whose file list
+  contains no test file is a brief that is wrong, not a task that is small — say
+  so before starting. Independently, before closing any fix: revert it locally
+  and confirm the suite goes **red**. A fix whose removal keeps the suite green
+  is untested, however carefully it was verified by hand.
+- **Similar Situations**: any "touch only these files" brief; freeze windows
+  around production-proven code (`memory/reusable-patterns.md`,
+  freeze-and-unfreeze); subagent tasks handed an allowed-paths list; reviews
+  that accept a demonstrated manual reproduction as evidence of coverage;
+  hotfix branches where the test suite lives in a separate repo.
+
+---
+
+### LL-0091 — A helper that reads its caller's global by name cannot be shared, so the sibling with the same exposure keeps the bug
+
+- **Root Cause**: An EXIT-trap safety net in `upgrade-n8n.sh` was hardened to
+  confirm that its restart actually *held* — three settled state samples plus a
+  `RestartCount` comparison across the window — in a function that read
+  `$N8N_SAFETY_NET_SETTLE_SECS` directly. Its sibling `upgrade-qdrant.sh` had
+  the identical exposure (same trap, same safety net, same
+  `restart: unless-stopped` compose file) and went on confirming with a single
+  container-state read taken the instant `docker compose up -d` returned. A
+  container crash-looping on boot reads `Running=true` in exactly that instant,
+  so the net printed `safety net: qdrant restarted` for a container that was
+  dying — the single line an operator is most likely to trust without checking.
+- **Why It Happened**: The function's *logic* was general from the first line;
+  only its configuration reference was specific. That one variable name made it
+  read as n8n-specific to everyone who looked, including the review that
+  hardened it. The fix landed in one of the two places that needed it, and the
+  gap was filed as a future task rather than recognised as a live defect in a
+  shipped safety net.
+- **Solution**: Moved the function into the shared library with the settle
+  window as a **parameter**; each script passes its own `config.env` knob.
+  Verified by mutation: collapsing the settle loop to a single sample, in the
+  shared implementation, breaks the qdrant scenarios *and* the n8n scenarios
+  from one edit — which is the evidence the two now share an implementation
+  rather than owning two copies that will drift.
+- **Preventive Rule**: When hardening a safety-critical path, grep for siblings
+  with the same exposure **before** deciding where the fix lives — the question
+  is "who else has this trap", not "where does this code currently sit". A
+  shared helper takes its configuration as an argument; a helper that names a
+  caller's global has silently chosen one caller, and will read as
+  unshareable to the next person even when its logic is fully general.
+- **Similar Situations**: paired upgrade/rollback or deploy/rollback scripts;
+  per-service health and readiness checks; retry/backoff helpers reading a
+  service-specific timeout; error-handling middleware pulling a global config
+  object; any review note containing the phrase "the other one has the same
+  problem".
+
+---
+
+### LL-0092 — A shared bounded-wait helper's fixed poll interval is a latency floor every future caller pays
+
+- **Root Cause**: A bounded-run helper backgrounds a command and polls
+  `kill -0` once a second until a deadline. For `docker compose pull` that
+  interval is free. A new caller — a restart confirm — made **five** bounded
+  `docker inspect` calls per invocation, and because the command is
+  backgrounded, the first poll essentially never finds it already finished
+  (measured: 20/20 trials still running at the first check). So every call paid
+  a full one-second floor.
+- **Why It Happened**: `sleep 1` was correct and invisible for the helper's
+  original callers, whose bounded commands took tens of seconds. The constant
+  encoded an assumption about each call's *duration* that quietly stopped
+  holding when a caller changed the *count*. Nothing in the helper stated the
+  assumption, so there was nothing to notice.
+- **Solution**: Probed the interval once at load — `sleep 0.2` where the shell
+  accepts it, 1s otherwise, since fractional `sleep` is not POSIX — in the same
+  shape as the existing `shasum`/`sha256sum` capability probe. Measured, all
+  three numbers timed rather than inferred: the affected test file was 1m36s at
+  100 assertions before the change, 2m45s at 117 assertions with the 1s poll,
+  and 1m40s at 117 with the probe.
+- **Preventive Rule**: A polling or backoff constant inside a shared helper is a
+  latency floor on every future caller, not a local detail. State the assumption
+  in the helper's comment where the constant is set, and re-measure whenever a
+  new caller's per-invocation call count is an order of magnitude above the
+  existing ones. Time it before and after — this cost was invisible in review
+  and unmissable in `time`.
+- **Similar Situations**: retry/backoff defaults, connection-pool acquire
+  timeouts, debounce intervals in shared UI hooks, fixed `sleep` in CI wait
+  loops, polling health-check clients, any helper whose cost profile was set by
+  its first caller.
+
+---
+
 <!--
 Template for new entries — copy this block:
 
