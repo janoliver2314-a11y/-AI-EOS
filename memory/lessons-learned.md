@@ -3857,6 +3857,70 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   assertions; manual DB edits made to force a code path, then not rolled back
   before the next attempt.
 
+### LL-0099 — A raw NUL byte makes a file binary, and grep then reports no match for text that is plainly there
+
+- **Root Cause**: Writing the JS/JSON escape for the NUL code point (backslash,
+  `u`, four zeros) through an editing tool emitted an actual 0x00 byte instead
+  of the six escape characters. One NUL anywhere in a file makes `grep` treat it
+  as binary; with `-c` it printed nothing and exited 1, i.e. **"no match" for a
+  string visible in the same file via `sed` and `tail`**. `file` reported the
+  markdown as `data`, and `git diff` would have shown it as a binary blob.
+- **Why It Happened**: The failure inverts the usual trust relationship. A grep
+  that finds nothing reads as "verified absent", so a placeholder scan, a
+  symbol-consistency check, and a secrets sweep all came back **clean because
+  grep was matching nothing at all**. Nothing in the output says "I could not
+  read this file"; the silence is indistinguishable from a pass. It recurred
+  four times in one session, across a plan document, a source edit made by a
+  subagent, a scratch ledger, and a report file — so it is a property of the
+  tooling, not a one-off slip.
+- **Solution**: Detect by byte count rather than by search:
+  `python3 -c "print(open('F','rb').read().count(b'\x00'))"` must print `0`,
+  and `file F` must not say `data`. Repair with a byte-level replace of `b"\x00"`
+  by the literal escape text. `grep -a` will search a binary file as text and is
+  the quickest way to confirm the file's *content* is otherwise fine.
+- **Preventive Rule**: **Never accept a clean `grep` as verification of a file
+  you just wrote.** Confirm the tool can see the file at all first — grep a
+  string you know is present, or check `file`/byte counts — before trusting a
+  zero-match result. More generally, when a check's pass condition is "no
+  output", make it prove it examined the input.
+- **Similar Situations**: any verification whose success is an empty result —
+  secrets scans, lint-with-no-findings, `grep -L`, test filters that match zero
+  tests and exit 0; also encoding faults that silently truncate a file at the
+  first NUL, and CRLF/BOM issues that make anchored patterns fail to match.
+
+### LL-0100 — An advisory that names the wrong subject reads as an all-clear for the right one
+
+- **Root Cause**: A UI warning took `findings[0]` from a function returning
+  findings across **all** departments, ordered by date then by a fixed
+  department order. While logging leave for an ENT member it displayed a warning
+  about *Orthopedics* — the earliest, first-ordered finding — and never showed
+  the ENT collision the warning existed to catch.
+- **Why It Happened**: The producer was correct and well tested; the defect was
+  entirely in the **selection at the consumer**. `[0]` is a natural way to say
+  "show one", and it is right whenever the list is already scoped to the subject
+  — which it was during development, when the test fixture had only one
+  department in play. The bug needs two departments in the window to appear, so
+  every hand-check and the browser verification passed. Worse, the failure is
+  not merely a miss: an amber line naming a *different* service line, rendered
+  at the moment of approving this one, actively asserts that this line is fine.
+  The design's stated rule was "never render an all-clear", and this violated it
+  through the side door while appearing to honour it.
+- **Solution**: Select by identity rather than by position —
+  `findings.find(f => f.staffIds.includes(subjectId))` — so the warning speaks
+  about the thing being edited, and renders nothing when the subject is in no
+  finding.
+- **Preventive Rule**: When a shared query returns results spanning several
+  subjects and a consumer shows only one, **filter to the consumer's subject
+  before choosing**, and never rely on ordering to do it. Ask what the warning
+  asserts when it displays the *wrong* item: if a reader would take it as
+  clearance for the item they are actually deciding, positional selection is a
+  correctness bug, not a presentation choice.
+- **Similar Situations**: `[0]`/`first()`/`LIMIT 1` over a multi-tenant or
+  multi-entity result; showing "the next" appointment, alert, or error from a
+  global list on a per-record screen; a single-slot notification fed by a
+  many-subject queue; validation summaries that surface one message from a
+  multi-field result.
+
 ---
 
 <!--
