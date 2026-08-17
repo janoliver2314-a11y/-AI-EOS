@@ -3923,6 +3923,54 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
 
 ---
 
+### LL-0101 — A 401 names its own auth scheme; read `WWW-Authenticate` before guessing
+
+- **Root Cause**: Configuring an MCP client against a self-hosted n8n endpoint
+  (`/mcp-server/http`), the first probe returned `401` and the response carried
+  `WWW-Authenticate: Bearer realm="n8n MCP Server", resource_metadata="…"`.
+  That header was never read. The endpoint was assumed to be API-key protected
+  because a sibling REST API on the same host used `X-N8N-API-KEY`, so several
+  rounds were spent generating a key, fixing its storage, and retrying two
+  header names — none of which could ever have worked, because the resource
+  was OAuth-protected and advertised exactly that in its first reply.
+- **Why It Happened**: A 401 was treated as a single undifferentiated "needs
+  credentials" state rather than a structured, machine-readable challenge.
+  Adjacent evidence (a working API key on `/api/v1/*` on the same host) was
+  taken as proof of the auth scheme for a *different* route on that host.
+  Only the status code was inspected — the probe used `-o /dev/null` and
+  discarded the headers that held the answer.
+- **Solution**: Re-probed with `curl -i`, read the challenge, fetched
+  `/.well-known/oauth-protected-resource/…` and
+  `/.well-known/oauth-authorization-server`, removed the static header from
+  the client config entirely, and completed the OAuth flow. Two follow-on
+  traps surfaced once looking at the right layer: (1) n8n sets its
+  `n8n-oauth-session` consent cookie with
+  `secure: process.env.NODE_ENV === 'production'`, which the official Docker
+  image always sets — so over plain HTTP only browsers with a localhost
+  exception (Chrome 89+, Firefox 75+) return it; Safari drops it and the flow
+  dies with "Invalid or expired authorization session". `N8N_SECURE_COOKIE`
+  does not govern that cookie. (2) The failure path logs at `debug`, so
+  default-level container logs were empty — silence in logs was mistaken for
+  "the request never arrived".
+- **Preventive Rule**: On any `401`/`403` from an unfamiliar endpoint, capture
+  full response headers (`curl -i`, never `-o /dev/null`) and read
+  `WWW-Authenticate` before choosing a credential type. Never infer one
+  route's auth scheme from a sibling route on the same host. When a service
+  advertises `resource_metadata` or a `.well-known` document, fetch it — it is
+  the authoritative description of the scheme, endpoints, and scopes. And
+  before concluding a request never reached a server, confirm the relevant
+  code path actually logs at the configured level.
+- **Similar Situations**: Any MCP/OAuth resource server, cloud API returning
+  Bearer challenges, or endpoint fronted by a gateway with different auth than
+  the app behind it. The `Secure`-cookie-over-HTTP trap generalizes to any
+  OAuth or session flow tested against `http://localhost` — browser localhost
+  exceptions differ, so a flow that works in Chrome may fail in Safari for
+  reasons invisible in server logs. See also LL-0002 for the related trap that
+  shell-exported env vars do not reach non-interactive or service contexts
+  (`~/.zshrc` is not sourced by non-interactive zsh; `~/.zshenv` is).
+
+---
+
 <!--
 Template for new entries — copy this block:
 
