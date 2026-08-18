@@ -3969,6 +3969,67 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   shell-exported env vars do not reach non-interactive or service contexts
   (`~/.zshrc` is not sourced by non-interactive zsh; `~/.zshenv` is).
 
+### LL-0102 — A diagnostic's interpretation rules are hypotheses until checked against the non-failing population
+
+- **Root Cause**: Instrumentation shipped with a four-row table mapping evidence
+  to conclusions ("long dwell on the item, nothing selected → the user is stuck
+  or confused"). The table was authored at design time from how the metrics were
+  *named*, never validated, and shipped in the spec as settled knowledge. When
+  the first real data arrived, that row was flatly false: the signal fired on
+  items the user went on to complete successfully — 760s, 552s, 305s and 209s
+  dwells with "nothing selected", every one of them followed by a correct answer.
+  Two metrics did not measure what their names implied. `msOnQuestion` was
+  wall-clock time on a mounted page, so a tab left open accrued "dwell" with
+  nobody looking at it. `hasUnsubmittedSelection` was the *instantaneous* state
+  at the moment the page was backgrounded, not a persistent flag — and the
+  ordinary mobile pattern is read → background → return → select → submit, so it
+  reads `false` for engaged and stuck users alike.
+- **Why It Happened**: The rules were only ever tested against the failure class.
+  Each row was sanity-checked by walking one known-bad session and confirming the
+  evidence was present — which it was. Nobody asked the complementary question:
+  *how often does this same evidence appear in sessions that went fine?* A signal
+  present in 100% of failures and 100% of successes is worth nothing, and that is
+  invisible if you only ever look at failures. The design-time plausibility of
+  "long dwell means confusion" was strong enough that the metric's actual
+  semantics were never re-read, and a name that sounds like a measure of
+  attention was accepted as one.
+- **Solution**: Re-derived each rule against the full population rather than the
+  failure class, which immediately falsified the dwell rule and confirmed the
+  others. Replaced it with a discriminator that is not in the event payload at
+  all — a join to the answers table, where an item only becomes a stall candidate
+  if it has **no answer row for that session**, and the signal only becomes
+  strong when the user returns to the same item across separate sittings and
+  still produces nothing. Corrected the spec in place, kept the falsified row
+  visible and marked wrong rather than quietly deleting it, and recorded the
+  measured counter-examples in a table beside it so the correction cannot be
+  re-litigated from memory. One rule ("it is a bug") was simultaneously settled
+  in the other direction: its evidence had never fired once across 191 rows, so
+  that branch closed by measurement rather than by assumption.
+- **Preventive Rule**: When shipping instrumentation, treat every
+  evidence→conclusion rule as a hypothesis with a named falsification query, and
+  **check each signal's base rate in the population that did NOT fail** before
+  trusting it to explain failure. Write that check as an explicit acceptance
+  criterion alongside the rule. Separately, before relying on any metric, re-read
+  what the code actually records rather than what the field is called — for
+  duration fields establish whether they measure elapsed wall-clock or active
+  engagement, and for boolean state fields establish whether they are sampled at
+  an instant or latched over an interval. A sampled-at-an-instant boolean is
+  almost never evidence of a persistent condition. And when a diagnostic is
+  scheduled for a keep-or-remove decision, validate its readout rules *before*
+  that decision, not as part of it.
+- **Similar Situations**: Any analytics, telemetry, observability or A/B readout
+  where a dashboard encodes "symptom → cause" rules; APM traces where a slow span
+  is read as the bottleneck without checking slow spans in healthy requests; log
+  alerts tuned only on incidents; heuristic fraud, abuse or churn rules; and
+  medical-style screening reasoning generally, where the discipline of asking for
+  the false-positive rate among the healthy is the same move. Closely related to
+  LL-0078 (an argument that a user problem exists is a hypothesis, not a finding)
+  — this is the same failure one layer further in: the *instrument built to test*
+  the hypothesis shipped with its own untested hypotheses baked into how it was
+  to be read. Also related to LL-0100, where an advisory naming the
+  wrong subject read as an all-clear for the right one: in both, a check that
+  could not have detected the problem was read as evidence there wasn't one.
+
 ---
 
 <!--
