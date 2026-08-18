@@ -360,10 +360,62 @@ same exposure before choosing where it lives (`LL-0091`).
 
 ---
 
+## Pattern: Extend a field's encoding, not its type, when a consumer you cannot cheaply redeploy reads it directly
+
+**Used in**: Task Command's `delegatedTo` — kept as a comma-separated string so
+a live n8n Code node reading `` `with ${t.delegatedTo}` `` kept working, then
+extended twice inside that encoding (multiple people, then CSV quoting for
+names containing the separator); the same reasoning already governed meeting
+`attendees` and minutes `recipients`. Also `recurring`, where a recurrence
+*grammar* (`w:2:3`, `m:1:30`) was put inside the existing string field rather
+than replacing it with an object.
+
+**Shape**: before changing a field's type, enumerate every reader. If any of
+them lives outside the deploy unit — an automation-platform node, a saved
+query, a spreadsheet formula, a partner integration — treat the *type* as
+frozen and add capability inside the *encoding* instead. Keep parse and format
+in one library with its own tests, so the encoding's rules exist in exactly one
+place, and let every existing reader keep doing what it already does.
+
+**Canonical example**: `src/lib/people.js` (CSV-style quoting over a
+comma-separated string, with a quote opening a quoted value only at the start
+of one, so pre-existing values parse unchanged) and `src/lib/recurrence.js`
+(a compact rule grammar inside a field that previously held a single keyword,
+with the old keywords still parsing to their original meaning).
+
+**When to use**: any schema change where a consumer is a *copy of logic* living
+somewhere you cannot redeploy in the same commit. The test is not "is an object
+cleaner?" — it is "what does changing the shape cost, and who pays it?" Here an
+array would have rendered without spaces and, because an empty array is truthy,
+printed a dangling "with " on every unassigned item; fixing that meant a manual
+workflow re-import with every credential re-attached and a timezone re-pinned,
+on a scheduled job whose failure mode is silence.
+
+**Why it is not just laziness**: the encoding often has to solve the ambiguity
+anyway. Joining names with `", "` when a name itself contains `", "` is
+unreadable in the rendered output no matter how it was stored, so quoting had
+to exist at the display layer regardless — which made keeping the string the
+cheaper *and* the more correct option, not a compromise between the two.
+
+**Trade-off**: encodings carry their own failure mode — a delimiter appearing
+inside a value. Pay for that once, in a tested parser, rather than letting
+heuristics spread across the readers. And say so in the code: the reason a
+field looks under-modelled must be written down at its definition, naming the
+consumer that constrains it. Otherwise the next contributor reads an
+under-modelled field, "tidies it up" into an object, and breaks a consumer that
+has no tests in this repo to catch it — the constraint is invisible from the
+code that would be changed.
+
+---
+
 ## Status
 
-_Last reviewed: 2026-08-15, after cross-referencing LL-0091 into the
-extract-after-the-second-consumer pattern — the same pair of scripts later
+_Last reviewed: 2026-08-18, after adding the extend-the-encoding-not-the-type
+pattern (from a Task Command session where a live n8n Code node read a field
+directly, freezing its type; see `LL-0103` for the recurrence bug found in the
+same session). Previously reviewed 2026-08-15, after cross-referencing
+LL-0091 into the extract-after-the-second-consumer pattern — the same pair of
+scripts later
 showed the cost of leaving the extraction undone once a safety fix landed in
 only one of them. Previously reviewed 2026-08-14, after adding the
 freeze-and-unfreeze and extract-after-the-second-consumer patterns (from a

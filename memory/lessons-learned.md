@@ -4032,6 +4032,43 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
 
 ---
 
+### LL-0103 — Deriving each element of a series from the previous one destroys the invariant the series exists to preserve
+
+- **Root Cause**: A monthly recurrence computed each occurrence from the
+  previous occurrence's date. February clamped 30 JAN to 28 FEB, and because
+  the intended day of the month was recorded nowhere except in that date, every
+  later occurrence was computed from the clamped value. One February turned a
+  task on the 30th into a month-end task permanently.
+- **Why It Happened**: Chaining looks correct because each individual step is
+  correct — `30 JAN + 1 month = 28 FEB` is the right answer, and so is
+  `28 FEB + 1 month = 31 MAR` once you accept the 28th as the input. The defect
+  is not in any step; it is in the steps *after* a lossy one, so a test that
+  checks a single hop passes and even a two-element chain can pass. It was also
+  masked by a heuristic ("if the date is month end, stay at month end") that
+  produced the right answer for a genuine month-end task and could not
+  distinguish it from a clamped one, because by then the two are the same date.
+- **Solution**: Store the invariant in the rule rather than re-deriving it, and
+  place every element from that stored anchor instead of from its predecessor.
+  The lossy step then affects only itself: February is the only month that
+  looks different, and March returns to the anchored day. The heuristic that
+  had been guessing at the invariant was deleted, because an anchor of 31
+  clamps to the last day of every month on its own.
+- **Preventive Rule**: When a series is required to preserve a property, that
+  property must be *stored*, never recovered from the previous element. Any
+  step that can clamp, round, truncate, saturate or coerce is a step that
+  destroys it. Two tells that this mistake is present: the code computes
+  element N from element N−1, and there is a heuristic trying to infer intent
+  from the current value. Test at least three elements spanning the lossy step,
+  since the failure is invisible before it and at it.
+- **Similar Situations**: recurring schedules of any kind; retry backoff
+  computed from the last actual delay rather than the attempt number; running
+  balances and rolling averages seeded from a clamped value; pagination cursors
+  derived from the last returned row when rows can be filtered out; "next
+  review date" fields advanced from the last completed date; any accumulator
+  that both carries state and is subject to a bound.
+
+---
+
 <!--
 Template for new entries — copy this block:
 
