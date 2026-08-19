@@ -204,6 +204,32 @@ nothing in between (`docs/standards/testing.md` rule 11,
 fresh fixtures, auto-reset mocks — apply the same masking to every test in
 the file without appearing in any of them.
 
+**Mutate the defensive lines you added on your own initiative, not only the
+behaviour you were asked to implement.** Steps 1-5 assume the test exists to
+close a known gap, so a surviving mutant reads as a weak test. There is a
+second case, and it is easier to miss: code you wrote proactively — a guard, a
+bounds check, a fallback, a sanitising lookup — that no test ever asked for.
+Its whole purpose is a case that does not arise in normal use, which is exactly
+why the feature tests cannot reach it. Mutating it does not reveal a weak test;
+it reveals **no test at all**, for a line already written and about to be
+committed as though justified.
+
+Observed: a filter dispatcher was refactored from a `switch` to a lookup table,
+and the lookup deliberately used `hasOwnProperty` rather than
+`TABLE[key]`, because the key is a free string and a plain lookup finds
+`Object.prototype.toString` — truthy, and returning a truthy string, so every
+record would match. Reverting that one call to a plain lookup broke nothing:
+three other mutants had each killed their intended test, and this one killed
+none. The reasoning behind the guard was sound and could be explained on
+demand; that is precisely the trap, because **being able to explain a line is
+not evidence that anything checks it**. The test written afterwards fails when
+the guard is removed, which is what makes the guard's presence defensible.
+
+The cheap discipline: after a change, list the lines you added that no
+requirement named, and mutate each one. If a mutant survives, you have either
+dead code or an untested guard — both worth knowing before the commit, and
+neither visible in a green run.
+
 ## Pattern: Credential handoff when Claude Code can't paste secrets itself
 
 **Used in**: a Clerk + Google OAuth production cutover, where a secret key, an
@@ -462,7 +488,10 @@ anything raise?"
 
 ## Status
 
-_Last reviewed: 2026-08-19, after adding the drift-guard-grid pattern (from a
+_Last reviewed: 2026-08-19, after extending the discriminating-test pattern to
+cover self-initiated defensive code (a `hasOwnProperty` guard survived its
+mutant because nothing tested it at all, unlike the three mutants beside it),
+and after adding the drift-guard-grid pattern (from a
 Task Command housekeeping session: the suite was green and the table was
 "guarded", but two cells of the copies-by-fields grid had never been compared to
 anything). Previously reviewed 2026-08-18, after adding the extend-the-encoding-not-the-type
