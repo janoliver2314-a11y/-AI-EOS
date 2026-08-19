@@ -4117,6 +4117,64 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
 
 ---
 
+### LL-0105 — A tombstone must carry every key the deleted row was the sole holder of, or whatever created it will recreate it
+
+- **Root Cause**: A calendar importer decided "is this event already on the
+  tracker?" by matching each event's `sourceId` against the `sourceId` of live
+  tasks. Deleting a task removed it from the list entirely, so nothing was left
+  holding that `sourceId`. The soft-delete did propagate — the tombstone
+  carried the row's `id`, which is what the sync merge keys on (LL-0081) — but
+  the importer keys on `sourceId`, not `id`. A deleted meeting therefore looked
+  like a brand-new event on the next sync and was imported straight back.
+- **Why It Happened**: LL-0081 fixed deletion propagation for the *merge*, and
+  the merge's key is the id, so the tombstone looked complete. Nobody asked the
+  second question: which *other* consumers key off this row, and on which
+  fields? An importer is easy to overlook as a consumer of deletions because it
+  reads the row list only to answer "does this exist yet" — it never mutates a
+  row, so it does not feel like part of the sync contract. The failure was also
+  masked intermittently: a secondary "same title and date" guard suppressed the
+  re-import whenever any unrelated row happened to share that key, so the bug
+  surfaced only when a weekly recurring task rolled its due date forward and
+  stopped covering for the deleted import. Intermittency made it read as a
+  recurrence quirk rather than a deletion bug.
+- **Solution**: Record the source at deletion time. The reducer keeps a
+  `dismissedSources` set, populated from the deleted item's `sourceId` before
+  the item is dropped, and the sync API returns the `sourceId` of every
+  tombstoned row alongside the ids so a deletion on one device suppresses the
+  import on all of them. Two details mattered. The set is **never drained** —
+  unlike the tombstone queue it must outlive the push that confirms the
+  deletion, since confirming a delete is not permission to forget it. And the
+  dedupe rules were moved out of the component into a pure module first,
+  because inline logic in JSX could not be tested at all, which is why the
+  original rule shipped unverified.
+- **Preventive Rule**: When introducing or reviewing soft-delete, enumerate
+  every consumer that keys off the row and every field each one keys on. A
+  tombstone carrying only the primary key serves only the consumer keyed on the
+  primary key. Treat any component that answers "does this already exist?" —
+  importer, deduplicator, reconciler, idempotency check — as a first-class
+  consumer of deletions, not merely of rows. Then ask of the deleted row: what
+  was it the *only* holder of? Whatever that is must survive the deletion, or
+  the thing that created it will create it again. Separately, never drain a
+  suppression record on the same signal that drains the delivery queue; they
+  answer different questions and have different lifetimes.
+- **Similar Situations**: Import and ingestion dedupe of any kind (calendar,
+  email, RSS, webhook replay, file watchers); unsubscribe and suppression lists,
+  where deleting a contact must not license re-adding them by re-import;
+  idempotency keys whose record is purged once the operation is acknowledged;
+  blocklists and dead-letter suppression; directory mirroring with a delete log;
+  ETL that upserts on a natural key while deletes are recorded against a
+  surrogate id. Directly extends LL-0081 in the same system — there the
+  tombstone did not travel, here it travelled but was underspecified, which is
+  the more dangerous shape because the propagation test passes. Related to
+  LL-0010: both are a guard whose lifetime is tied to the wrong signal. A useful
+  detection technique when this class is suspected: count deleted rows against
+  *distinct* keys among them. Here 19 tombstoned imports covered only 10
+  distinct events, six of them deleted two or three times each — the user had
+  been re-deleting the same meetings for weeks and had never reported it as a
+  bug, because each individual reappearance was plausible.
+
+---
+
 <!--
 Template for new entries — copy this block:
 
