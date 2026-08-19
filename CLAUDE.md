@@ -97,6 +97,7 @@ Full detail lives in `docs/standards/`. Summary rules that apply regardless of l
 5. Secrets, credentials, and tokens are never committed. Use environment variables and document required variables in `.env.example`.
 6. Dependencies are added deliberately — see `docs/standards/dependency-management.md` before adding any new package.
 7. A declared ARIA role obliges its whole contract — required properties, keyboard model, and focus management — or the role is not declared at all; see `docs/standards/accessibility.md` before adding any interactive control.
+8. A deletion must be an explicit signal carrying every key its consumers match on — including whatever the deleted record was the sole holder of — or something will recreate it; see `docs/standards/data-lifecycle.md` before adding soft-delete, sync, or any importer that decides whether a record already exists.
 
 ## 6. Documentation Standards
 

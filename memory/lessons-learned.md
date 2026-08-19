@@ -3201,7 +3201,10 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   yet sent". Before writing "remove what is missing", enumerate every reason a
   row can legitimately be absent; if that list has more than one entry, you
   need an explicit tombstone. Test deletion with two clients, because one
-  client can never observe this failure.
+  client can never observe this failure. Codified in
+  `docs/standards/data-lifecycle.md` (rules 1 and 7), written later —
+  this rule had no standards home until `LL-0105` exposed the same gap
+  a second time.
 - **Similar Situations**: Offline-first and CRDT/last-write-wins syncs, cache
   invalidation, directory mirroring (`rsync --delete`), incremental ETL where a
   missing source row could mean "deleted" or merely "not in this batch", and
@@ -4156,7 +4159,9 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   was it the *only* holder of? Whatever that is must survive the deletion, or
   the thing that created it will create it again. Separately, never drain a
   suppression record on the same signal that drains the delivery queue; they
-  answer different questions and have different lifetimes.
+  answer different questions and have different lifetimes. Codified in
+  `docs/standards/data-lifecycle.md` (rules 2-5) and summarised as
+  `CLAUDE.md` §5 rule 8.
 - **Similar Situations**: Import and ingestion dedupe of any kind (calendar,
   email, RSS, webhook replay, file watchers); unsubscribe and suppression lists,
   where deleting a contact must not license re-adding them by re-import;
