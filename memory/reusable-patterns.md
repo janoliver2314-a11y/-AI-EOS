@@ -408,9 +408,64 @@ code that would be changed.
 
 ---
 
+## Pattern: A drift guard covers a pair AND a field — enumerate the grid, because partial coverage reads as full coverage
+
+**Used in**: Task Command, where the department list and the absence table each
+exist in three copies — `src/constants.js` (the definition), `api/_lib/classify.js`
+(a serverless function must not import from `src/`), and an n8n Code node (which
+cannot import at all). Drift was already treated as a test failure and the suite
+was green, yet two cells of the grid had never been checked: the api copy of the
+*department list* was compared to nothing (only the workflow copy was), and the
+absence table's `counts` flags were compared workflow-to-api but never to the
+app.
+
+**Shape**: when one table is duplicated across boundaries that cannot import
+each other, the guards you need are not one per copy. They are one per **(pair
+of copies × field that matters)**. Write that grid down and mark each cell
+covered or not. Do it from the *table's* side, not the test file's — the
+existing tests are organised by consumer (`test/n8n-brief.mjs`), so reading them
+tells you which workflow is checked, never which cell of the table is.
+
+**Why partial coverage is worse than none**: a passing check is named after the
+table (`absence types match across app, api and workflow`), so it reads as
+though the table is covered. Nobody re-derives which fields that sentence
+actually compared. Values were checked; `counts` was not — and `counts` is the
+whole reason the table has rows rather than being a list of strings, because it
+is what separates "absent" from "present but restricted". A guard that covers
+the cheap cell and skips the load-bearing one buys confidence without buying
+safety.
+
+**Also assert order when order is rendered.** Both copies were iterated to lay
+out sections of an email, so equal-membership-different-order is a silent
+behaviour change with nothing to catch it. `deepStrictEqual` on the arrays, not
+a set comparison, whenever a consumer iterates rather than looks up.
+
+**How to find the gaps**: grep for the constant's name across the whole repo
+rather than reading the test files, then ask of each hit whether anything
+compares it to the definition. The copies announce themselves in comments
+(`Mirrors ABSENCE_TYPES in src/constants.js`) — a comment claiming a mirror with
+no test behind it is the exact signature of an uncovered cell.
+
+**Prove each new guard the usual way**: break one cell at a time and confirm the
+matching check fails and only that one — see *Prove a new test discriminates by
+breaking the implementation, not by deleting it*, above. Three mutations here
+(drop a department, flip one `counts`, reorder two rows) each isolated one
+check.
+
+**Trade-off**: the grid grows as copies × fields, and not every field deserves a
+cell — display-only fields (colours, short labels, lead times) legitimately live
+in only one copy. Cover the fields a consumer *branches on*. The question to ask
+of each field is not "is it duplicated?" but "if these two disagreed, would
+anything raise?"
+
+---
+
 ## Status
 
-_Last reviewed: 2026-08-18, after adding the extend-the-encoding-not-the-type
+_Last reviewed: 2026-08-19, after adding the drift-guard-grid pattern (from a
+Task Command housekeeping session: the suite was green and the table was
+"guarded", but two cells of the copies-by-fields grid had never been compared to
+anything). Previously reviewed 2026-08-18, after adding the extend-the-encoding-not-the-type
 pattern (from a Task Command session where a live n8n Code node read a field
 directly, freezing its type; see `LL-0103` for the recurrence bug found in the
 same session). Previously reviewed 2026-08-15, after cross-referencing
