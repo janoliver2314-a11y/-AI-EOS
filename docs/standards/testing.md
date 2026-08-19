@@ -105,6 +105,22 @@ configuration changes are exempt unless they affect runtime behavior.
     fixtures, and auto-reset mocks — to every test in the file, silently.
     (`memory/lessons-learned.md` LL-0095.)
 
+12. **Vary the field the behavior depends on, and read human-facing output
+    before it reaches humans.** Where every test of a unit holds one input
+    constant, that input is untested however many cases there are — so when
+    production emits several shapes of it (session lengths of 10, 20 and 85;
+    names of 3 and 60 characters; amounts of 1 and 10,000), at least one case
+    uses the extreme shape rather than the modal one. This bites hardest in
+    generated user-facing copy, where an assertion that a value *appears* in
+    the output is satisfied by every value it could ever take, so no
+    assertion can fail as the number grows into nonsense. Correctness and
+    tone are different properties: substring assertions verify the first and
+    cannot see the second. Before any first real send, **render the actual
+    output for the actual recipients and read it** — a step that costs
+    seconds, belongs immediately before the send rather than in CI, and is
+    the only check positioned to catch it. (`memory/lessons-learned.md`
+    LL-0104.)
+
 ## Design Decisions
 
 - **Coverage percentage is not the goal; behavior coverage is.** A high

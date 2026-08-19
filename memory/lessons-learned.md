@@ -4069,6 +4069,54 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
 
 ---
 
+### LL-0104 — A fixture that only ever has one shape lets generated copy pass its tests and insult its reader
+
+- **Root Cause**: An email subject was generated as
+  `f"{total - answered} questions to go"` with no ceiling. Every test of that
+  sender constructed a **ten-item** session, so the largest number the suite
+  ever produced was 9. Production hands out sessions of 10, 20 and 85 items.
+  The first real send would have reached the recipient who had been away
+  longest — 9 answers into an 85-item session — as "76 questions to go", the
+  exact loss framing the function's own docstring existed to forbid.
+- **Why It Happened**: The tests asserted the *presence* of the remaining
+  count ("7" is in the subject), which is true at every size, so no assertion
+  could ever fail as the number grew. The one input that governed tone was
+  the one input the fixtures held constant, and holding it constant looked
+  like good practice rather than a gap — a ten-item session is the modal case
+  and the one everybody pictures. The defect was also not in the code's logic:
+  `85 - 9 = 76` is correct. It was in what a correct number *means* to a
+  person reading it, which no arithmetic assertion is positioned to judge.
+- **Solution**: Rendered the actual subject lines for the actual recipients of
+  the imminent send by calling the sender with each real `(answered, total)`
+  pair and printing the results. The bad line was obvious on sight and took
+  seconds to find, having survived a 758-test suite. The fix put a named
+  threshold on the wording (below it, count down; above it, name the resume
+  point), with a boundary test pinning the switch in both directions and a
+  regression test built from the real 9-of-85 case.
+- **Preventive Rule**: When a fixture holds one field constant across every
+  test of a unit, ask what that field's real distribution is — if production
+  emits several shapes, at least one test uses the extreme shape, not the
+  modal one. And for any output whose *quality* is human judgement — user-facing
+  copy, generated messages, summaries, alerts — assertions on substrings verify
+  correctness but cannot verify tone. Before it reaches real people, **render
+  the real output for the real recipients and read it**. This is cheap, it is
+  the only check that would have caught this, and it belongs immediately before
+  a send, not in CI.
+- **Similar Situations**: Templated notifications where a count, duration,
+  currency amount or name length is interpolated; pluralisation and
+  truncation rules tested only at the comfortable middle of the range;
+  "N items remaining" progress copy; alert text embedding a threshold breach
+  magnitude; generated summaries whose length depends on input size; any
+  LLM-produced or templated string where the test asserts a substring is
+  present rather than reading the whole. Distinct from LL-0027, where local
+  data lagged production **scale** and the failure was mechanical (a query too
+  long): here the data lagged production **variety** and the failure was
+  entirely in how a correct number read to a human. Related to LL-0028 — there
+  a test's red state was not behavioral; here it could not be red at all,
+  because the assertion was satisfied by every value the field could take.
+
+---
+
 <!--
 Template for new entries — copy this block:
 
