@@ -137,11 +137,12 @@ Rules:
 
 ## 10. Git Workflow
 
-1. All work happens on a feature branch; the default branch is protected and reflects production-ready state.
-2. Commits are small, logically scoped, and buildable/testable in isolation where practical.
-3. **Never push automatically without explicit approval for this project's bootstrap and structural work.** For a Claude Code session: after completing a logical unit of work, summarize the changes, propose a commit message, and wait for explicit user approval before committing or pushing — unless the user has separately authorized autonomous commits/pushes for a specific task.
-4. Never force-push over another contributor's work without confirmation.
-5. Never use `--no-verify` to bypass hooks; fix the underlying failure instead.
+1. All work that changes **executable content** happens on a feature branch; the default branch is protected and reflects production-ready state. Executable content means anything a machine acts on: source, scripts, hooks, CI workflows, dependency manifests, and configuration that tooling reads.
+2. **Prose-only changes commit directly to the default branch.** A change qualifies when *every* touched path is a prose document that no tooling acts on: anything under `memory/` or `docs/`, and the root-level documents (`CLAUDE.md`, `README.md`, `CONTRIBUTING.md`, `CHANGELOG.md`). Files under `.github/` are **not** prose for this purpose — templates and workflows are read by tooling, so they follow rule 1. A change that touches prose and executable content together is not exempt; branch it, or split it. The reasoning: prose cannot break a build or a consumer, rule 4 below already requires explicit human approval on every commit here, and a branch-and-merge cycle around a single lessons entry is ceremony with no failure mode to protect against. This exemption exists because the rule and the practice had disagreed for the entire life of the repository — every lessons entry has landed directly on the default branch — and on inspection the practice was the correct one.
+3. Commits are small, logically scoped, and buildable/testable in isolation where practical.
+4. **Never push automatically without explicit approval for this project's bootstrap and structural work.** This applies to exempt changes too: committing straight to the default branch removes the branch, never the approval. For a Claude Code session: after completing a logical unit of work, summarize the changes, propose a commit message, and wait for explicit user approval before committing or pushing — unless the user has separately authorized autonomous commits/pushes for a specific task.
+5. Never force-push over another contributor's work without confirmation.
+6. Never use `--no-verify` to bypass hooks; fix the underlying failure instead.
 
 ## 11. Commit Standards
 

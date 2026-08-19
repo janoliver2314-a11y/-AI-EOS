@@ -18,6 +18,11 @@ how the review process works.
 
 1. Fork the repository (external contributors) or create a feature branch
    (maintainers): `feature/<short-description>` or `fix/<short-description>`.
+   **Exception for maintainers:** a prose-only change — memory entries,
+   documentation, the root-level `.md` documents — commits directly to the
+   default branch per `CLAUDE.md` §10 rule 2. Explicit approval is still
+   required before committing or pushing; only the branch is skipped.
+   External contributions always arrive as a pull request.
 2. Make your changes following the standards in `docs/standards/`.
 3. Add or update tests for any behavior change (`docs/standards/testing.md`).
 4. Update documentation affected by your change — including `CHANGELOG.md`
