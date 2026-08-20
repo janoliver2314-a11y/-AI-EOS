@@ -128,9 +128,12 @@ onDeleteConfirmed:  pendingDeletes.remove(record.id)  // transient
   third-party mirror or an outbound integration is added, revisit whether
   tombstones need ordering or vector-clock semantics rather than the
   last-write-wins rule assumed here.
-- Tombstone growth is unbounded by design; if a system's lifetime deletion
-  count ever reaches a scale where the pull payload becomes costly, the
-  replacement is a per-copy high-water mark, not a time window.
+- Tombstone growth is unbounded by design, and no system here is close to a
+  scale where that costs anything. If one ever is, the replacement is an open
+  question rather than a decision this document has made: a per-copy high-water
+  mark would keep the correctness property the rest of this standard rests on,
+  where a time window trades that property away for a bound. Neither has been
+  measured against a real payload, so the choice should be made against one.
 
 ## Related Documents
 

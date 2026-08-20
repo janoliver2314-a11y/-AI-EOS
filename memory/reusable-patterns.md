@@ -488,7 +488,62 @@ anything raise?"
 
 ## Status
 
-_Last reviewed: 2026-08-19, after extending the discriminating-test pattern to
+## Pattern: A suppression record's lifetime is set by what it suppresses, not by the queue that delivered it
+
+**Recorded on one use**, against this file's own second-use bar, because the
+failure it prevents is documented with a root cause (`LL-0105`) and is invisible
+until it has already happened several times. Treat it as provisional until a
+second use confirms the shape.
+
+**Used in**: Task Command's `dismissedSources` — the sourceIds of deleted
+calendar imports, held in the sync reducer beside the tombstone queue and
+deliberately never drained, so a meeting deleted on one device is not
+re-imported on the next calendar sync.
+
+**Shape**: when an operation both *delivers* something and *suppresses*
+something, two records are in play and they do not expire together. The
+delivery record is transient — it exists until the other side acknowledges,
+and draining it on acknowledgement is correct. The suppression record is
+durable: what it protects against is not the un-acknowledged send but the
+recreation, and the thing that recreates is usually a different component on a
+different schedule. Keep them as separate collections with separate lifetimes,
+and write down at the definition which is which.
+
+**Canonical example**: `src/state/reducer.js` — `deletes` drains on `FLUSH_OK`
+once the server confirms the tombstone; `dismissedSources`, populated in the
+same `REMOVE` action, has no drain path at all. A test asserts exactly that
+pairing, because the natural instinct is to clear both on the same signal.
+
+**When to use**: any delete that a creator can undo — importers and ingestion
+jobs, unsubscribe and blocklist handling, idempotency keys, dead-letter
+suppression, mirroring with a delete log. The question that surfaces it: *after
+this deletion is fully acknowledged, what would stop the record coming back?*
+If the answer is "nothing, because the thing that made it will make it again",
+the suppression record has to outlive the acknowledgement.
+
+**Why it is not just a leak**: unbounded growth is the deliberate trade. The
+set grows with lifetime deletions rather than live records, which for a
+personal tracker is a few hundred strings; bounding it by time would
+reintroduce the bug for any copy that was offline longer than the window. If
+the size ever genuinely matters, the bound has to preserve the correctness
+property rather than trade it away — see `docs/standards/data-lifecycle.md`,
+where that choice is left open rather than decided.
+
+**Trade-off**: a permanent suppression is permanent from the user's side too.
+In Task Command a deleted calendar import can never be re-imported; it has to
+be re-entered by hand. That is the right default for a deletion the user made
+deliberately, but it must be a stated consequence rather than an emergent one,
+and it argues for making the suppression *narrow* — keyed per occurrence rather
+than per series, so deleting one week of a recurring meeting does not silently
+suppress every week after it.
+
+---
+
+_Last reviewed: 2026-08-19, after adding the suppression-record-lifetime
+pattern — recorded on a single use, against the second-use bar at the top of
+this file, and marked provisional in the entry itself (from the Task Command
+session where a deleted calendar meeting kept re-importing; see `LL-0105`).
+Previously reviewed 2026-08-19, after extending the discriminating-test pattern to
 cover self-initiated defensive code (a `hasOwnProperty` guard survived its
 mutant because nothing tested it at all, unlike the three mutants beside it),
 and after adding the drift-guard-grid pattern (from a
