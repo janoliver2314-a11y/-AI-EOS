@@ -4279,6 +4279,50 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   trusted caller.
 
 
+### LL-0109 — A test that self-skips on the size of data it does not own can be switched off by an unrelated data change
+
+- **Root Cause**: Two tests drilled the *narrowest* published slice of a content
+  bank on purpose — a narrow pool makes the assertion strong, since draining all
+  but five of thirteen items means a correct implementation must return exactly
+  those five, where a lazy uniform draw would land there once in 1,287 runs. Both
+  guarded that design with `if len(pool) < 13: pytest.skip(...)`. A content edit
+  in a different work stream relabelled **one** item's difficulty, the slice went
+  from 13 to 12, and both tests skipped. The suite reported "781 passed" and went
+  green.
+- **Why It Happened**: The skip itself was correct defensive design — running the
+  assertion against a smaller pool would have weakened it silently, which is
+  worse. And unlike LL-0087/LL-0089, nothing lied: the runner printed "2 skipped"
+  on the same stream as the pass count. The gap is who was looking. The person
+  who tripped the guard was editing a **database row**, not a test, and read the
+  one number that change could plausibly affect — the pass count, which was
+  unchanged and green. A skip condition expressed in terms of production data
+  makes a test's liveness a function of that data, so the people able to switch
+  the test off are exactly the people with no reason to be reading the skip list.
+- **Solution**: Made the test adapt to the pool instead of asserting a fixed
+  size — drain `len(pool) - 5` rather than a hard-coded 8, and lower the guard to
+  the point where the assertion genuinely weakens rather than the point where the
+  arithmetic was originally written. The gate stays strong (1 in 792 at a pool of
+  12) and no longer depends on the bank holding still. The prevention that
+  generalises further: after any change to the dimension a fixture selects on,
+  run the suite so skips are listed and compare that list, not the pass count.
+- **Preventive Rule**: When a test skips on a precondition drawn from data the
+  test does not own — a row count, a slice size, a generated parameter list —
+  treat that as coverage wired to production content, and prefer adapting to the
+  data over asserting a magic number. Where the guard must stay, name in its
+  message what changed and what it costs, and check the skip list after any data
+  migration, backfill or relabel. **A pass count is not a coverage signal**: a
+  parameterised test whose cases are generated from a query becomes zero tests,
+  and stays green, the moment the query returns nothing. Distinct from LL-0087
+  and LL-0089, which are about a skip being *reported* dishonestly; here the
+  report was honest and the reader was in another file.
+- **Similar Situations**: Parameterised tests built from a fixture directory or a
+  database query; golden-file tests that skip when the golden is missing rather
+  than failing; integration tests that skip on an unreachable service, so an
+  outage in CI silently removes a whole layer; tests gated on a feature flag that
+  a later cleanup flips off; any `pytest.importorskip` on an optional dependency
+  that quietly stops being installed.
+
+
 <!--
 Template for new entries — copy this block:
 

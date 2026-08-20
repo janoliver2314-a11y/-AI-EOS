@@ -132,6 +132,22 @@ configuration changes are exempt unless they affect runtime behavior.
     touches people, do both, and run the single real operation first every time.
     See `memory/lessons-learned.md#LL-0106`.
 
+14. **A test must not make its own liveness a function of data it does not
+    own.** Where a test skips on a precondition drawn from production content —
+    a row count, a slice size, a generated parameter list — anyone able to edit
+    that content can switch the test off, and they are precisely the people with
+    no reason to read a skip list. Prefer adapting the assertion to the data over
+    asserting a magic number: derive the sample from the pool, and set the guard
+    at the point where the assertion genuinely weakens rather than where the
+    original arithmetic happened to sit. **A pass count is not a coverage
+    signal** — a parameterised test whose cases come from a query becomes zero
+    tests, and stays green, the moment the query returns nothing. After any
+    migration, backfill or relabel touching the dimension a fixture selects on,
+    run the suite so skips are listed and compare the skip list, not the passes.
+    This is distinct from rule 10: there the skip is reported dishonestly; here
+    it is reported honestly to someone looking at another file. See
+    `memory/lessons-learned.md#LL-0109`.
+
 ## Design Decisions
 
 - **Coverage percentage is not the goal; behavior coverage is.** A high
