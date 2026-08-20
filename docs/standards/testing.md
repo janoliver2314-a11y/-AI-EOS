@@ -121,6 +121,17 @@ configuration changes are exempt unless they affect runtime behavior.
     the only check positioned to catch it. (`memory/lessons-learned.md`
     LL-0104.)
 
+13. **A dry run must not report what would happen unless it exercised the path
+    that makes it happen.** A preview that shares the read and render paths with
+    the real operation but stops before the side-effecting call has verified the
+    inputs it computed and nothing else — most importantly, not the credentials,
+    endpoint, or permissions the real call consumes, which typically live outside
+    the repo. Either validate every input the real call needs (in both modes, so
+    a green preview means executable and not merely renderable), or provide a way
+    to perform exactly one real operation against a safe target. For a batch that
+    touches people, do both, and run the single real operation first every time.
+    See `memory/lessons-learned.md#LL-0106`.
+
 ## Design Decisions
 
 - **Coverage percentage is not the goal; behavior coverage is.** A high

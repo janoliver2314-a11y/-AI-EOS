@@ -45,6 +45,22 @@ Applies to all code, configuration, and automation in this repository.
    out of the third channel, which is the one people forget (see
    `memory/lessons-learned.md#LL-0093`).
 
+9. **A command that writes a secret to a file must use an absolute path.** A
+   relative `>> .env` resolves against whatever directory the shell happens to
+   be in, so the same command that configures a project can instead deposit a
+   live production credential in `$HOME` — outside the repo, outside its
+   `.gitignore`, and outside the place anyone will think to look for it. Give
+   the full path, and verify where the value landed rather than that the command
+   exited zero.
+
+10. **Validate a credential's shape, not just its presence, wherever one is read
+    from configuration.** Most providers use a recognizable prefix, so the check
+    costs one comparison and catches the whole class of plausible non-secrets:
+    masked values, `[SENSITIVE]`-style placeholders from secret managers that
+    refuse to return a value, unresolved references, and `.env.example`
+    defaults. A check for non-empty tests only that someone set something (see
+    `memory/lessons-learned.md#LL-0107`).
+
 ## Design Decisions
 
 - **This document holds the checklist; Volume 07 holds the reasoning and

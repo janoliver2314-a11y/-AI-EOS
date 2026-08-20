@@ -4180,6 +4180,105 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
 
 ---
 
+### LL-0106 — A dry run that never reaches the side-effecting call proves only that the copy renders
+
+- **Root Cause**: A one-off email script defaulted to a dry run that fetched
+  the real recipients, rendered the real subject and body for each, and printed
+  "16 emails would go out". It never called the sender. Three consecutive
+  `--apply` runs then failed on all 16 recipients, each on a *different* piece
+  of send configuration: the API key was absent from the machine entirely; then
+  it was present but was a placeholder; then the key worked and the From
+  address was empty, so the provider answered "The domain is invalid". Every
+  one of those runs was preceded by a green dry run.
+- **Why It Happened**: The dry run was designed to answer "is the copy right?",
+  which it did well, and its output *looked* like an end-to-end rehearsal — the
+  same recipients, the same rendered text, a count of what would happen. That
+  resemblance is the trap: a preview that shares the read path and the render
+  path with the real thing, but stops short of the write path, verifies
+  everything except the part that can actually fail at send time. The
+  configuration it depended on lived in the deployment environment, not the
+  repo, so nothing local could have been noticed missing by reading code.
+- **Solution**: Two changes. A preflight that validates *every* input the send
+  needs — credential and sender address — and runs in **both** modes, so a
+  green dry run means sendable rather than merely renderable. And a
+  `--test-send <address>` that pushes one real message through the real path to
+  a throwaway address before any recipient is involved. The test send is what
+  actually caught the third failure; the preflight only caught the first two.
+- **Preventive Rule**: A dry run, preview, or `--plan` mode that does not
+  execute the side-effecting call must not report what *would* happen as though
+  it had been verified — at most it has verified the inputs it did compute.
+  Either extend it to validate every input the real call consumes, or give the
+  tool a way to perform exactly one real operation against a safe target first.
+  For any batch that touches people, prefer both, and run the single real
+  operation before the batch every time — nothing short of a real send proves a
+  real send works.
+- **Similar Situations**: Any preview/apply pair (Terraform-style plans,
+  migration dry runs, bulk-import previews, scheduled-job simulations);
+  anything whose credentials or endpoint configuration lives outside the repo,
+  where "it rendered fine locally" and "it will work in production" are
+  independent claims.
+
+### LL-0107 — A credential check that accepts any non-empty string is not a credential check
+
+- **Root Cause**: `vercel env pull` does not return the value of an
+  environment variable marked **Sensitive** — it writes the literal string
+  `[SENSITIVE]` into the env file in its place. That placeholder was copied
+  into `.env`, passed a preflight that only tested for non-empty, and was sent
+  to the email provider as a bearer token, which answered "API key is invalid"
+  for all 16 recipients.
+- **Why It Happened**: The check encoded "the operator remembered to set
+  something", not "this is a credential". The failure message then pointed the
+  wrong way: "API key is invalid" reads as *the key is wrong or expired*, when
+  the truth was *this value was never a key, and the source it came from cannot
+  produce one*. A Sensitive variable in Vercel is write-only by design; it
+  cannot be read back from the dashboard or the CLI, so the recovery is not to
+  fetch it again but to mint a new one at the provider.
+- **Solution**: The preflight now validates shape, not just presence — the
+  provider's keys carry a known prefix — and its error names the placeholder
+  explicitly, so the next person reads "this is what Vercel writes for a
+  Sensitive variable, the value cannot be read back at all, create a fresh key"
+  rather than re-attempting the pull.
+- **Preventive Rule**: Validate a credential's *shape* wherever one is read
+  from configuration — most providers use a recognizable prefix, and the check
+  costs one comparison. Treat any secret-fetching tool as capable of returning
+  a plausible non-secret: masked values, placeholders, and empty defaults all
+  arrive as strings. And when a store is write-only, say so in the error, because
+  the natural next action — fetch it again — cannot succeed.
+- **Similar Situations**: Masked values from any secrets UI; `***` in CI logs
+  copied by hand; 1Password/Vault references pasted unresolved; a `.env.example`
+  placeholder shipped as a real value.
+
+### LL-0108 — Read the module's own allowlist before inventing a value for it
+
+- **Root Cause**: Backfilling a row into a table whose `source` column is
+  governed by an allowlist, I invented the value `direct_invite` because it
+  described the case accurately. The module already carried an allowlisted
+  value for exactly that case — and the comment above it named the specific
+  record I was backfilling, and the date. An unrecognized value does not raise
+  here: `normalize_source` silently coerces anything outside the allowlist to
+  the default, so the row would have been written as an ordinary landing-page
+  signup and quietly corrupted channel attribution.
+- **Why It Happened**: The value was invented from the *situation* rather than
+  from the code, and the situation was well enough understood that reading the
+  constant felt unnecessary. The allowlist also lived one module away from the
+  insert. And the degradation is silent by design — the coercion exists so a
+  hostile or typo'd query parameter cannot pollute the column, which is right,
+  but it means a wrong value written by a trusted caller produces no signal at all.
+- **Solution**: Read `_ALLOWED_SOURCES` and used the value that was already
+  there. The comment beside it carried history the schema could not: which
+  entry point produces these rows, and which record first exposed it.
+- **Preventive Rule**: Before writing a value into a column governed by an
+  enumeration, allowlist, or CHECK constraint, read the definition — and read
+  its comments, which often encode why each member exists. Treat a normalizing
+  function that silently substitutes a default as a place where a wrong value
+  produces no error, so correctness has to be established before the write, not
+  observed after it.
+- **Similar Situations**: Enum-backed status columns; feature-flag names; event
+  or metric names consumed by a dashboard that groups unknown values into
+  "other"; any coercion whose job is to accept untrusted input, applied to a
+  trusted caller.
+
+
 <!--
 Template for new entries — copy this block:
 
