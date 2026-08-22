@@ -4421,6 +4421,109 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   connection opening rather than a message arriving; cache freshness keyed on
   when the entry was created rather than when its source last changed.
 
+### LL-0112 — A corpus balanced on every tracked axis can still be narrow on the axis nobody tracks
+
+- **Root Cause**: A 1,735-item question bank was balanced against its spec at
+  the category level (within 0.1 points of every target), at the sub-topic
+  level, and by item format — and stood on 12 of the spec's ~150 activity
+  statements. Every previous expansion round had selected content by the
+  axes it measured, so the measured axes converged and the unmeasured one
+  never moved.
+- **Why It Happened**: Balance metrics are computed over the keys the corpus
+  already contains. A dimension with no rows in it produces no imbalance
+  signal; it produces nothing. Each round asked "which existing bucket is
+  thin?" and never "which buckets do not exist?"
+- **Solution**: Compared the corpus's distinct activity statements against the
+  source document's full list, not against the corpus's own table; picked one
+  missing statement per category; copied source text verbatim and
+  string-verified it against the PDF.
+- **Preventive Rule**: Before selecting work by "where is coverage thin",
+  enumerate the source taxonomy from the **source**, join the corpus to it,
+  and look at the rows with zero count. Balance measured only over present
+  keys is a statement about the present keys. Re-check whenever the selection
+  basis of the previous round has been "exhausted" — that is the signal that
+  the measured axes have converged and an unmeasured one is next.
+- **Similar Situations**: Test suites with even coverage across the modules
+  that have tests; a content calendar balanced across the channels already in
+  it; an on-call rotation fair across the people already on it; a feature
+  matrix balanced across the platforms the product already supports.
+
+### LL-0113 — The longest option is the answer: a batch tell that no single-item review can see
+
+- **Root Cause**: Across 44 freshly drafted multiple-choice items, the keyed
+  answer was the longest option in 31 — 6 of 6 in one file. Every item passed
+  a per-item review; the drafters wrote the correct answer with the most care
+  and therefore the most words. A prior round had the same defect class with
+  answer *letters* and "fixed" it by imposing a cycle that was equally gameable.
+- **Why It Happened**: The property is a statistic over the batch, invisible
+  inside any one item, and the natural drafting habit (explain the right
+  answer fully, dash off the wrong ones) produces it by default.
+- **Solution**: Measured the key's length *rank* (1 = longest) across the
+  batch; set per-file ceilings; fixed by tightening keys and giving distractors
+  genuine clinical detail — never by padding, and never by making
+  "second-longest" the new tell. Post-fix ranks 7/13/11/13. The validator now
+  prints the rank distribution and warns above 50%.
+- **Preventive Rule**: For any generated set where a learner or attacker sees
+  many items, compute batch-level statistics of the *answer* — position,
+  length rank, presence of numbers or named entities, pattern of
+  alternation — before review, and assert an even spread. Remove the signal
+  (vary the rank), do not relocate it (a fixed cycle, an "avoid A" rule, a
+  "never longest" rule are all the same defect moved).
+- **Similar Situations**: Generated test fixtures where the valid case is
+  always the first; synthetic training data where the positive class has
+  longer text; CAPTCHA or quiz generators; A/B variants where the treatment is
+  always listed second; security-question banks; any LLM-generated option set.
+
+### LL-0114 — Read generated claims with their context removed; in-context reviewers cannot see context dependence
+
+- **Root Cause**: 573 clinical claims, each written beside its parent question
+  and each destined to be retrieved alone by a tutor. Five reviewers reading
+  full items found none of the 29 context-dependent claims; one pass reading
+  only the claims, stems deliberately hidden, found all 29 — including one that
+  widened a drug-specific warning to "a blood thinner" and one that told a
+  student to delay a first-line action until a later step.
+- **Why It Happened**: A claim that depends on its stem reads *correctly* next
+  to its stem. The reviewer's context supplies exactly the qualifier the claim
+  omitted, so the omission is invisible to anyone who has the context. Only a
+  reader without the context experiences the defect.
+- **Solution**: Extracted every claim to a stem-free file and gave it to a
+  separate agent with an explicit "do not open the source items" instruction.
+  Highest-yield audit per token in the round.
+- **Preventive Rule**: When an artifact will be consumed detached from the
+  context it was authored in — retrieved snippets, error messages, log lines,
+  API field descriptions, alert text, commit subjects — review it **in the
+  form it will be consumed**, with the authoring context physically removed,
+  by a reviewer who has not seen that context. In-context review is necessary
+  and insufficient; it cannot detect context dependence by construction.
+- **Similar Situations**: Docstrings read in an IDE tooltip; alert messages
+  read at 3 a.m. without the runbook; commit subjects read in `git log
+  --oneline`; search-result snippets; i18n strings reviewed only in their
+  source screen; error strings that say "the file" when the user sees no file.
+
+### LL-0115 — Resume the killed worker; do not redraft
+
+- **Root Cause**: 16 parallel agents (8 drafters, later 8 fixers) were killed by
+  a session usage limit, twice in one session. Because every agent rewrote its
+  whole output file after every two items, 66 of 100 items were on disk at the
+  kill; because each agent's transcript persisted, a one-line "you were killed;
+  resume" message restored each with full context, and the round cost one
+  extra prompt per agent rather than a restart.
+- **Why It Happened**: Session limits are external and unannounced; the design
+  choice that made them cheap was made before they hit.
+- **Solution**: Incremental whole-file writes from the start; resume by
+  addressing the original agent id rather than spawning fresh; verify the
+  on-disk state with the mechanical validator before resuming, because an
+  agent killed *before* its first write leaves the file untouched and one
+  killed mid-write can leave a partial.
+- **Preventive Rule**: Any long-running generator writes its output
+  incrementally to a stable path from the first unit of work, and the
+  orchestrator treats "killed" as "resume from disk + transcript", never as
+  "restart". Check the artifact's state before resuming; do not trust the
+  agent's last message about it.
+- **Similar Situations**: Batch ETL jobs without checkpoints; long test-suite
+  runs with no per-test result file; migrations that commit at the end; any
+  agent swarm under a token or time budget.
+
 <!--
 Template for new entries — copy this block:
 
