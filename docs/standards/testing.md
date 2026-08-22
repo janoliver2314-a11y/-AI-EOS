@@ -148,6 +148,22 @@ configuration changes are exempt unless they affect runtime behavior.
     it is reported honestly to someone looking at another file. See
     `memory/lessons-learned.md#LL-0109`.
 
+15. **A stubbed datastore stops testing every boundary whose shape the datastore
+    decides.** Where the code parses a persisted value and branches on it, a
+    fixture written by the same test that reads it makes the round-trip true by
+    construction — `fromisoformat(isoformat(x)) == x` proves self-consistency,
+    not that the store's representation parses. This is rule 7 in the read
+    direction, with a datastore in the consumer's seat rather than a wire
+    grammar. Assert the parse against **one real value the store actually
+    produced** — copied from the live table into the fixture, or exercised in a
+    single integration test — and pin the schema property the parse depends on:
+    a migration changing a column's type or precision passes the whole suite and
+    fails in production. A `timestamp` where the code assumes `timestamptz`
+    returns a naive datetime and raises `TypeError` on comparison, turning an
+    intended 409 into a 500 on every request down that path. See
+    `memory/lessons-learned.md#LL-0110`.
+
+
 ## Design Decisions
 
 - **Coverage percentage is not the goal; behavior coverage is.** A high

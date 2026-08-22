@@ -4323,6 +4323,55 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   that quietly stops being installed.
 
 
+### LL-0110 — A stubbed datastore turns a format-boundary test into a round-trip against itself
+
+- **Root Cause**: A timed-exam deadline is written as
+  `datetime.now(UTC).isoformat()` and read back as
+  `datetime.fromisoformat(session["expires_at"])`. Every test of that path runs
+  against a stubbed Supabase, so the value the read sees is the exact string the
+  write produced: `fromisoformat(isoformat(x)) == x` holds **by construction**.
+  The real store — Postgres `timestamptz` via PostgREST — is the only thing that
+  normalises the representation, and it was the one component removed from the
+  loop. 783 tests exercised the real route, the real dependency chain and both
+  sides of a five-second grace window, and not one of them touched the
+  representation the production code actually parses.
+- **Why It Happened**: The stub was the right call for the tests it was written
+  for — the behaviour under test was arithmetic on a deadline, not serialisation,
+  and stubbing kept the suite fast and hermetic. The gap opens because the
+  *format* of the persisted value is an implicit input to that arithmetic, and
+  nothing in the test names, the fixture or the assertions says so. A round-trip
+  looks like coverage of a boundary while proving only self-consistency; this is
+  rule 7's failure mode with a datastore in the consumer's seat instead of a wire
+  grammar. No defect resulted — the column is `timestamptz(6)`, so production has
+  always been correct — but the correctness rests on a schema property that no
+  test asserts and no comment records.
+- **Solution**: Verified the parse against a real stored value rather than a
+  fixture: pulled the actual production row for the incident the fix was written
+  for and replayed it through the guard, importing the grace constant from the
+  module instead of retyping it. That confirmed the value parses tz-aware and the
+  boundary is exact (accepted through +5.000 s, rejected from +5.001 s). Then
+  established what the safety actually depends on by running the guard against
+  the representations other plausible column types produce.
+- **Preventive Rule**: When a test stubs the datastore, it has stopped testing
+  every boundary whose shape the datastore decides. Where parsed persisted values
+  feed a comparison or a branch, assert the parse against **one real value the
+  store actually produced** — copied from the live table into the fixture, or
+  exercised in a single integration test — and pin the schema property the parse
+  relies on, because a migration that changes a column's type or precision passes
+  the entire suite and fails in production. Concretely here: a `timestamp`
+  instead of `timestamptz` yields a naive datetime and raises `TypeError: can't
+  compare offset-naive and offset-aware datetimes` on **every** exam answer, a
+  500 rather than the 409 the code intends; a precision-0 column rounds the
+  deadline and silently moves the grace boundary by up to a second. Both are
+  green on 783 tests.
+- **Similar Situations**: Any `fromisoformat`/`strptime` on a persisted
+  timestamp; numeric columns where the driver returns `Decimal` and the fixture
+  supplies `float`; `jsonb` round-trips that reorder keys or coerce large
+  integers; `uuid` and `citext` columns compared as strings; enum columns whose
+  driver returns the label rather than the value; anything read back from a store
+  that normalises on write, where the test writes and reads through the same
+  stub.
+
 <!--
 Template for new entries — copy this block:
 
