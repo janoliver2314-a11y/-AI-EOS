@@ -4372,6 +4372,55 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   that normalises on write, where the test writes and reads through the same
   stub.
 
+### LL-0111 — A container's creation time is not the activity inside it
+
+- **Root Cause**: A re-engagement sequence measured how long a learner had
+  been quiet from `practice_sessions.created_at` — the newest session row. A
+  session is a container: it is created when the learner opens one, and the
+  activity (answers) is written into it afterwards, sometimes much later. So
+  the proxy failed in both directions. A learner who opened a session and
+  answered nothing restarted the quiet clock (one nudge slipped 1 day 21 h past
+  the last real answer). And a learner who *resumed* an old session wrote ten
+  answers into a row created nine days earlier, so the proxy read them as 10.6
+  days quiet two days after they had finished a session — the resume feature,
+  which the product works hardest to cause, was invisible to the metric by
+  construction.
+- **Why It Happened**: "Last session" and "last activity" were the same thing
+  when the code was written, because at that point a session could only be
+  created and answered in one sitting. Two later features broke the identity
+  without touching this module: the resume path (answers into old rows) and
+  nothing preventing an empty open. Neither diff contained the word
+  `created_at`, so review could not see it. The tell that nobody had ever
+  decided what "active" meant: a second predicate in the **same module**
+  already measured from the last answer. Two definitions of one concept in one
+  file is not redundancy, it is an undecided decision.
+- **Solution**: Anchored the quiet clock to the timestamp of the last answer,
+  with the newest session's creation standing in only for learners who have
+  never answered anything (so nobody drops out of the sequence). Moved the
+  dedupe window to the same instant deliberately — both mean "since the learner
+  was last genuinely active", and anchoring them apart would let an empty open
+  hide an already-sent stage and repeat it. Replayed the next scheduled run
+  against every real recipient under old and new logic before merging: three
+  sends changed, no repeats, nobody dropped.
+- **Preventive Rule**: Time-based user-state predicates — quiet, idle, stale,
+  churned, "last seen" — anchor on the timestamp of the **action that
+  constitutes activity**, never on the container the action lands in (session,
+  thread, order, connection, document). Two checks when adding such a predicate
+  or a feature near one: (1) can the container exist with nothing inside it,
+  and (2) can anything write into an *old* container? A yes to either means
+  creation time is both fakeable and blind. When a feature starts writing into
+  old rows, grep for every predicate anchored on those rows' `created_at` —
+  that feature's diff will not show them. And when one module carries two
+  definitions of the same concept, resolve it explicitly and say which one
+  wins; do not leave both standing.
+- **Similar Situations**: "Last login" derived from session-row creation rather
+  than the request that authenticated; a parent's `updated_at` that child
+  writes do not bump, feeding a staleness check; "thread activity" from the
+  thread's creation while replies land days later; order "last activity" from
+  order creation while line items and payments update; presence from a
+  connection opening rather than a message arriving; cache freshness keyed on
+  when the entry was created rather than when its source last changed.
+
 <!--
 Template for new entries — copy this block:
 
