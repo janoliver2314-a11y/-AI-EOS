@@ -98,6 +98,7 @@ Full detail lives in `docs/standards/`. Summary rules that apply regardless of l
 6. Dependencies are added deliberately — see `docs/standards/dependency-management.md` before adding any new package.
 7. A declared ARIA role obliges its whole contract — required properties, keyboard model, and focus management — or the role is not declared at all; see `docs/standards/accessibility.md` before adding any interactive control.
 8. A deletion must be an explicit signal carrying every key its consumers match on — including whatever the deleted record was the sole holder of — or something will recreate it; see `docs/standards/data-lifecycle.md` before adding soft-delete, sync, or any importer that decides whether a record already exists.
+9. Plumbing between services — schedules, webhooks, notifications, data sync — defaults to an n8n workflow, and the template library (https://n8n.io/workflows) is searched before any workflow is built; see `docs/standards/automation.md` before adding any integration, cron job, or event handler.
 
 ## 6. Documentation Standards
 
