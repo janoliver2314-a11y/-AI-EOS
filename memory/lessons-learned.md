@@ -4548,6 +4548,43 @@ Template for new entries — copy this block:
   changed — "no other" written from a delta reads as a claim about the
   whole run and wastes the diff.
 
+### LL-0117 — A killed worker survives if it edits through a script, not through per-item reads
+
+- **Root Cause**: Eight parallel fix agents were editing 100 generated items when a
+  session limit killed all of them. The seven that loaded the file, patched it with
+  a script and dumped it back had their work on disk and resumed by verifying what
+  had landed. The one that read items one at a time to edit them in place had spent
+  its whole budget on reading and landed nothing, so it restarted from zero.
+- **Why It Happened**: Per-item reading scales its token cost with the size of the
+  data, while a script's cost is constant — so the read-based worker was always going
+  to run out first, and its progress lived only in its context rather than on disk.
+- **Solution**: Any agent editing structured data at scale must go through a script
+  that reads, transforms and writes the file, and must write after each batch. Say so
+  in the prompt. On resume, tell the agent whether its file changed and have it verify
+  what landed before doing anything — never let it redo landed work, and never let a
+  coordinator assume a kill means no progress. Corollary for the coordinator: commit
+  each worker's output as it reports, so a later kill cannot cost more than one batch.
+
+### LL-0118 — When an ordered item has an arguable pair, suspect a bundled step before arguing the domain
+
+- **Root Cause**: A published exam item sequenced an emergency response and ranked a
+  supportive measure ahead of the only definitive treatment. The argument looked like a
+  clinical-guideline dispute. It was not: one option had fused two actions — an
+  assessment that legitimately comes first with an intervention that should come later —
+  so BOTH orderings were defensible depending on which half of the option the reader
+  weighted, and an all-or-nothing item punished whichever the candidate chose.
+- **Why It Happened**: Bundled steps read naturally as prose ("assess X and do Y"), so
+  they survive review; the defect only shows when the step is ranked against another.
+  A second published item on the same topic keyed the opposite order, and neither
+  review caught the contradiction because each item was reviewed alone.
+- **Solution**: One step = one action, enforced at authoring time. When two adjacent
+  steps look swappable, split the bundled option before debating the domain — the
+  bundle is usually the whole defect. Fix by RESTRUCTURING (remove the contested
+  element from the ranking, add a forcing dependency between every adjacent pair) rather
+  than re-keying, which leaves the ambiguity in place. And check sibling items on the
+  same topic for the opposite key: a contradiction between two items is invisible to
+  any review that looks at one item at a time.
+
 ### LL-NNNN — Short, specific title
 
 - **Root Cause**:
