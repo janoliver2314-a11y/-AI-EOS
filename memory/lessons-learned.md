@@ -4527,6 +4527,27 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
 <!--
 Template for new entries — copy this block:
 
+### LL-0116 — A fix that changes a predicate's anchor must be applied to every predicate that shares its meaning
+
+- **Root Cause**: A retention module had three predicates that each meant
+  "since the learner was last active": the quiet clock, its dedupe window,
+  and a day2-suppression check. A prior fix (LL-0111) moved the first two
+  from "latest session created" to "last answer" after measuring that a
+  resume writes into an OLD session row. The third kept session identity as
+  its bound, so a prompt sent before a resume silenced the day2 of the quiet
+  streak that began after it. Found by diffing a live cron run against its
+  prediction: one student due day2 received nothing.
+- **Why It Happened**: The earlier fix was scoped to the predicates the
+  measurement had touched; the third shared the concept but not the code
+  path, and its docstring asserted a bound ("re-arms on a new session")
+  that the resume finding had already falsified.
+- **Solution**: When a finding changes what an anchor means, grep the module
+  for every predicate built on the same concept and make them agree on one
+  anchor, not just the ones the incident exercised. Also: record a cron
+  prediction as the FULL expected send list, not only the sends that
+  changed — "no other" written from a delta reads as a claim about the
+  whole run and wastes the diff.
+
 ### LL-NNNN — Short, specific title
 
 - **Root Cause**:
