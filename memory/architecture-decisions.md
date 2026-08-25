@@ -7,6 +7,7 @@ ADR wins — update this index to match.
 | ID | Title | Status | Summary |
 |---|---|---|---|
 | 0001 | Record Architecture Decisions | Accepted | Use ADRs under `docs/decisions/` for significant, hard-to-reverse decisions. See `docs/decisions/0001-record-architecture-decisions.md`. |
+| 0002 | Always-on services on EliteDesk via SSH tunnel | Accepted | n8n + qdrant run 24/7 on the Ubuntu home server; Mac keeps localhost URLs through a LaunchAgent SSH tunnel, avoiding config/OAuth churn. See `docs/decisions/0002-services-on-elitedesk-via-ssh-tunnel.md`. |
 
 <!--
 Add one row per ADR, most recent first is not required — keep in ID order.

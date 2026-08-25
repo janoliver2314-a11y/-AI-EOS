@@ -4866,3 +4866,22 @@ Template for new entries — copy this block:
 - **Preventive Rule**:
 - **Similar Situations**:
 -->
+
+## 2026-08-25 — Ubuntu 26.04 ships sudo-rs; sudoers keywords are case-sensitive
+
+**Bug/symptom:** `visudo` rejected a hand-typed sudoers drop-in with
+"invalid sudoers file" on a fresh Ubuntu 26.04 server.
+
+**Root cause:** two stacked issues. (1) Ubuntu 26.04 defaults `sudo`/`visudo`
+to sudo-rs (the Rust rewrite), whose parser errors are blunt and whose
+`visudo` supports fewer flags (no `--file=` long form with `~` expansion).
+(2) The actual failure was the rule being retyped by hand in lowercase —
+`nopasswd:all` — and sudoers keywords (`ALL`, `NOPASSWD`) are case-sensitive
+in every implementation.
+
+**Fix:** validate candidate files with `visudo -c -f <file>` *before*
+installing into `/etc/sudoers.d/`, and paste commands rather than retyping
+them. Also: when driving a remote host from a Mac terminal, wrap
+server-side commands in `ssh -t host "..."` — a bare command block runs on
+the Mac (symptom there: `install: unknown group root`, since macOS uses
+`wheel`).
