@@ -4821,6 +4821,40 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   reconciliation and audit sampling, red-team passes, any checklist run repeatedly by the
   same reviewer.
 
+### LL-0128 — A data-derived literal inside a pattern-matching predicate will eventually contain a metacharacter
+
+- **Root Cause**: A bulk content correction generated one guarded SQL statement per
+  record so a re-run would be a no-op. The guard was
+  `... and column not like '%<new value>%'`. The new value was derived from the data
+  itself — a unit of measurement appended to a numeric range. For one record that unit
+  was **`%`**, so the guard rendered as `not like '%5.7 to 6.4%%'`; because `%` is LIKE's
+  wildcard, the pattern reduced to "contains 5.7 to 6.4", which was already true. The
+  guard excluded the row and that single correction silently did not apply. **The other
+  47 statements, whose units were ordinary strings, worked perfectly.**
+- **Why It Happened**: The literal was interpolated into a *pattern* predicate rather
+  than a *string* predicate, and its alphabet overlapped the pattern language's
+  metacharacters. Nothing in the generator knew the difference between "text to find" and
+  "pattern to match". Because only one value in fifty collided, every smoke test and every
+  eyeball pass over the generated SQL looked correct — the failure is invisible in the
+  aggregate and shows up as a single unexplained record.
+- **Solution**: Use a predicate with no pattern semantics for substring tests —
+  `strpos(col, lit) > 0` / `= 0` in Postgres, `instr` / `position` / `contains`
+  elsewhere. It needs no escaping and cannot be subverted by the literal's contents. If a
+  pattern predicate is genuinely required, escape the metacharacters and declare the
+  escape explicitly (`LIKE ... ESCAPE '\'`), and unit-test with a literal that contains
+  one. More generally: verify the *effect* of a generated batch, not just that it ran —
+  here a cold rebuild from the generated script, diffed against the expected state, is
+  what surfaced it.
+- **Preventive Rule**: Before interpolating a literal into any pattern-matching
+  construct, ask whether the literal's own character set overlaps that language's
+  metacharacters. If the literal is derived from data rather than written by hand, assume
+  it eventually will, and choose a non-pattern predicate instead.
+- **Similar Situations**: SQL `LIKE`/`ILIKE`/`SIMILAR TO`, regexes assembled from user or
+  data input, shell and filesystem globs, `.gitignore` and rsync filters, Lucene and
+  Elasticsearch query strings, LDAP filters, ORM `contains`/`startswith` helpers that
+  compile to `LIKE`, and any "search for this exact string" feature built on a matcher
+  that was designed for patterns.
+
 <!--
 Template for new entries — copy this block:
 
