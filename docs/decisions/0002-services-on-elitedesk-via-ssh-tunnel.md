@@ -56,8 +56,16 @@ redirect URIs.
   lesson recorded in `memory/lessons-learned.md`.
 - If the Mac is off, nothing breaks server-side; the tunnel (and thus
   Mac-local access) simply resumes when the LaunchAgent reconnects.
-- **Pending:** the `ops/stack-updates` upgrade harness still targets the
-  local Docker daemon and the retired Mac stack copies. Its upgrade
-  scripts are guarded against accidental use and its weekly check is
-  unloaded until the harness is ported to run on the server (planned as
-  its own session).
+- ~~**Pending:** the `ops/stack-updates` upgrade harness still targets the
+  local Docker daemon and the retired Mac stack copies.~~ **Resolved
+  2026-08-25:** the harness now runs on the server (checkout at
+  `~/ops/stack-updates`, deployed by `git push` from the Mac repo; weekly
+  check via server cron, Mondays 06:30 UTC), because its backup/restore/
+  compose-rewrite steps are host-filesystem operations that
+  `DOCKER_HOST=ssh://` cannot remote (see `memory/lessons-learned.md`
+  LL-0130). The Mac keeps only reporting: a LaunchAgent pulls the server's
+  `last-run.json` and posts the notification, with a staleness alarm if
+  the server check stops running. The migration guard became a permanent
+  host guard, and the qdrant container was pinned to `user: "1000:1000"`
+  so the harness never meets root-owned files in its data directory. Full
+  record: the stack-updates README, "Moving to the home server".

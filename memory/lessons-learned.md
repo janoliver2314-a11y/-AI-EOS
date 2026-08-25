@@ -4885,3 +4885,64 @@ them. Also: when driving a remote host from a Mac terminal, wrap
 server-side commands in `ssh -t host "..."` — a bare command block runs on
 the Mac (symptom there: `install: unknown group root`, since macOS uses
 `wheel`).
+
+### LL-0129 — Under pipefail, `producer | grep -q` turns an early match into a pipeline failure on Linux
+
+- **Root Cause**: `grep -q` exits the instant it matches, closing the pipe while the
+  producer is still writing. The producer's next `write()` gets EPIPE; GNU tools die of
+  SIGPIPE (exit 141), and with `set -o pipefail` that becomes the pipeline's status — so
+  the `&& echo true` arm never runs precisely *because* the pattern was found. macOS's
+  BSD tools usually complete their writes before the reader exits, so the same code is
+  green on a Mac and deterministically red (or worse, silently wrong) on Linux.
+- **Why It Happened**: The stack-updates suite (460 assertions, "deliberately
+  dependency-free so it runs unchanged on the Linux home server") was developed and run
+  exclusively on macOS. The idiom `$(... | grep -q X && echo true || echo false)` reads
+  as obviously correct, and nothing exercises the race until the producer's output is
+  large enough and the match early enough — first observed only when the suite moved to
+  the server (test-common.sh failed 5/5 there, 0/many on the Mac).
+- **Solution**: Replace piped `grep -q` with a full-consuming `grep PATTERN >/dev/null`
+  — same match semantics and exit status, but it reads its whole input, so the producer
+  never sees EPIPE. The dangerous variant in *production* code was worse than a test
+  flake: `if docker logs ... | grep -qiE 'decrypt'; then` would have *suppressed a true
+  credential-failure detection* on Linux, since a real early match kills the producer
+  and the if-condition reads false.
+- **Preventive Rule**: Under `set -o pipefail`, never pipe a potentially large producer
+  into a consumer that can exit before EOF (`grep -q`, `head`, `read`) when the
+  pipeline's status carries meaning. Either let the consumer drain its input
+  (`grep >/dev/null`) or capture first and match on the variable. Tiny single-write
+  producers (`printf` of a short string) cannot race and are fine.
+- **Similar Situations**: `cmd | head -1` in `$(...)` under pipefail; `curl | jq -e
+  'first(...)'`; log-scanning `if` conditions; any CI script developed on macOS and
+  promoted to a Linux runner — BSD vs GNU buffering differences hide exactly this class
+  of bug until the platform switch.
+
+### LL-0130 — "Only the config changes when we move hosts" holds only for tools that touch the resource through a remotable API
+
+- **Root Cause**: The stack-updates harness's `config.env` promised to be "the only file
+  that changes when moving to the home server". The promise implicitly assumed every
+  operation the harness performs could be re-pointed by configuration. Its docker calls
+  could (`DOCKER_HOST=ssh://host` remotes the API socket), but its backup (`cp -a`),
+  restore (`mv`/`cp`), compose-file rewrite (`sed -i`), `.env` reads, and sqlite reads
+  are host-filesystem operations against the stack directories — no environment variable
+  relocates those. The tool was filesystem-coupled, so the tool had to move with the
+  filesystem.
+- **Why It Happened**: The claim was written when both the harness and the stacks lived
+  on one machine, where "API access" and "filesystem access" are indistinguishable. The
+  coupling only becomes visible when the resource moves behind a network boundary.
+- **Solution**: Run the harness ON the host that owns the filesystem (server-resident
+  checkout, deployed by `git push` to a `receive.denyCurrentBranch=updateInstead`
+  remote; server cron runs the checks). The old machine keeps a thin reporting shim
+  (fetch results over SSH, notify locally, dead-man's-switch staleness alarm). One
+  tracked config file still serves both hosts by branching paths on `uname -s` — the
+  achievable form of the original promise turned out to be "zero files change", but only
+  after conceding *where the code runs*.
+- **Preventive Rule**: Before promising a tool is portable-by-configuration, enumerate
+  its side effects and classify each as API-mediated (remotable) or filesystem/process-
+  local (not). One non-remotable side effect means the tool relocates with the resource;
+  add a host guard so running it from the wrong machine refuses loudly instead of
+  half-working (probes answering over a tunnel while filesystem calls hit stale local
+  copies is worse than an error).
+- **Similar Situations**: Backup scripts pointed at bind-mount directories; anything
+  mixing `kubectl`/API calls with local volume paths; DB admin scripts that pair a
+  remote connection string with local dump files; monitoring that health-checks a
+  tunneled port and concludes the *local* service is up.
