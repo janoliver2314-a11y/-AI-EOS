@@ -4735,6 +4735,92 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   validation before submitting generated data, pre-commit hooks, CI as a backstop
   rather than a first line.
 
+### LL-0125 — Review the field the consumer actually reads, not the one that looks authoritative
+
+- **Root Cause**: Records carried two renderings of the same fact: a formal, precise
+  `statement` and a plain-language `simplified` restatement. Downstream, only the
+  plain-language one was embedded and served to users — the formal one was stored and
+  never retrieved. Every review process read whichever was convenient, and the
+  simplification step had no stand-alone check at all. In one audited batch, **17 of 30
+  defects existed only in the served field**: the formal text was correct and the
+  simplification introduced the error. Always the same move — a dropped unit, qualifier
+  or noun. "35 to 45 mmHg" became "about 35 to 45". "An oral opioid depresses
+  ventilation" became "a pain pill slows breathing", which is false, because the broader
+  noun includes drugs that do not. A sampling query showed the same defect class already
+  present in the long-published corpus.
+- **Why It Happened**: The precise field looks like the source of truth, so reviewers
+  read it and assumed the derived field was a faithful restatement. Simplification is
+  treated as formatting rather than as a transformation that can change truth value.
+  Nothing in the pipeline asserted that the two renderings still say the same thing, and
+  the field that was actually shipped was the one nobody was accountable for.
+- **Solution**: Establish which field the consumer receives, from the code that reads it,
+  and point review at that field specifically. Where both renderings exist, treat the
+  derived one as unreviewed content, not as a formatting variant. Add a mechanical check
+  for the cheap half of the class: a derived text that retains a numeric range whose
+  source text carried a unit. Beware of over-detecting — a first, loose query flagged
+  five times as many candidates and was mostly wrong, because dropping a unit is often
+  correct plain-language rewriting ("82/50 mmHg" → "that blood pressure is low"). The
+  defect is narrower: **keep the number, drop the unit**, or **substitute a broader noun
+  that makes the statement false**.
+- **Preventive Rule**: Find out which representation is actually served, and review that
+  one. A derived or simplified rendering is new content, not formatting.
+- **Similar Situations**: Summary/detail field pairs, translated or localised strings,
+  plain-language or reading-level variants, alt text, API response shapes that flatten a
+  richer internal model, notification previews truncated from a full message, LLM-generated
+  abstracts stored beside their source.
+
+### LL-0126 — Assigning a distribution centrally is not enough; the checker has to enumerate which distributions exist
+
+- **Root Cause**: A prior round failed because a *batch-level rule* was handed to many
+  parallel workers who each held one instance of the affected type. Each applied the rule
+  independently and they converged on the same "correction", producing exactly the pattern
+  the rule was meant to prevent. The fix — assign the intended distribution centrally, per
+  instance, instead of describing it — worked: every centrally assigned distribution landed
+  exactly as specified. **But only the distributions that previous rounds had been burned by
+  were on the list.** Two structurally identical properties nobody had been burned by yet
+  were not assigned, and came out fully degenerate: every instance of one type keyed the same
+  two slot positions, and every instance of another keyed the same two. Both passed the
+  automated checker at zero errors, because it validated the containers (pool sizes,
+  parity between options and explanations) and never looked at *which* slots were selected.
+- **Why It Happened**: The remedy was applied as a list of known cases rather than as a
+  property of the problem. "Assign batch distributions centrally" is only actionable if
+  something enumerates what the batch-level distributions *are*; left to memory, the list
+  is a record of past incidents, not a survey of current exposure.
+- **Solution**: Derive the list mechanically instead of recalling it. For every field a
+  consumer could exploit positionally, have the checker report its distribution across the
+  batch and fail or warn on degeneracy — identical selection signatures across instances of
+  a type, or one value holding a majority. Then assign centrally against that generated list.
+  When a real pattern is found, **remove the signal rather than relocating it**: an earlier
+  round "fixed" a positional bias by imposing a strict rotation, which was equally exploitable.
+- **Preventive Rule**: A remedy stored as a list of past incidents will always trail current
+  exposure. Make the checker enumerate the category, and drive the remedy from its output.
+- **Similar Situations**: Test fixtures that accidentally share a shape, generated sample or
+  demo data, load-test traffic mixes, shuffled option ordering, randomised assignment in
+  experiments, synthetic datasets for model training, anything where "looks varied" was
+  asserted by a human rather than measured.
+
+### LL-0127 — A second pass finds new defects only if it is run differently from the first
+
+- **Root Cause**: A review step known to be high-yield was specified as "run it twice".
+  The second pass did find substantially more — about 30% of the final findings, including
+  several of the most serious — but the reviewer reported that the gain came from
+  *changing how it read*: reversing the traversal order and running mechanical sweeps for
+  specific defect shapes (dangling demonstratives, missing units). Simply re-reading in the
+  same order surfaced very little.
+- **Why It Happened**: Re-reading in the original order re-establishes the same context and
+  the same expectations, so the reader re-derives the same conclusions. Attention adapts to
+  sequence; the second look down the same path is not an independent sample.
+- **Solution**: Specify what must differ on the repeat pass, not just that it repeats.
+  Reverse or randomise the order. Strip or shuffle the grouping that supplies context, so
+  each item is judged alone. Add targeted mechanical sweeps for the defect shapes the first
+  pass is structurally poor at noticing. Ask for the pass-2-only count as an explicit output
+  — if it trends to zero across runs, the second pass has stopped being a different pass.
+- **Preventive Rule**: "Do it again" is not a review method. State what changes on the
+  second pass, and measure what it caught that the first did not.
+- **Similar Situations**: Proofreading, code review of a large diff, manual QA scripts,
+  reconciliation and audit sampling, red-team passes, any checklist run repeatedly by the
+  same reviewer.
+
 <!--
 Template for new entries — copy this block:
 
