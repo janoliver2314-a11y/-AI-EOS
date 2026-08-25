@@ -4524,9 +4524,6 @@ Entries are numbered `LL-NNNN`, sequential, never renumbered or deleted.
   runs with no per-test result file; migrations that commit at the end; any
   agent swarm under a token or time budget.
 
-<!--
-Template for new entries — copy this block:
-
 ### LL-0116 — A fix that changes a predicate's anchor must be applied to every predicate that shares its meaning
 
 - **Root Cause**: A retention module had three predicates that each meant
@@ -4584,6 +4581,162 @@ Template for new entries — copy this block:
   than re-keying, which leaves the ambiguity in place. And check sibling items on the
   same topic for the opposite key: a contradiction between two items is invisible to
   any review that looks at one item at a time.
+
+### LL-0119 — A deliberately non-fatal side effect needs a reconciliation count, because by design nothing ever fails
+
+- **Root Cause**: Publishing a reviewed item writes it to the database and then
+  indexes its claims into a vector store so a retrieval feature can serve them. The
+  indexing call is wrapped in a catch-and-log on purpose: an index outage must not
+  fail a reviewer's action. One item published through the UI had its nine claims
+  silently not indexed. The write succeeded, the reviewer saw success, the logs held
+  a stack trace nobody was reading, and the retrieval feature simply never received
+  that item. It surfaced only because a later bulk run counted indexed points against
+  published claims and came up nine short.
+- **Why It Happened**: The swallow is correct — the alternative, failing the
+  reviewer's request because a downstream service blinked, is worse. But "this
+  failure must not be fatal" was implemented without its necessary other half: some
+  way to notice it happened. A best-effort side effect with no reconciliation is
+  indistinguishable from one that always succeeds, so the gap can only widen.
+- **Solution**: Every deliberately-swallowed side effect needs a cheap invariant that
+  can be checked out of band — here, "count of indexed points == count of published
+  claims", which is two queries and catches the whole class. Run it after any batch
+  that triggers the side effect, and make it part of the operation's definition of
+  done rather than a thing someone remembers. If the reconciliation is expensive
+  enough that you would not run it routinely, the swallow is probably wrong and the
+  work belongs in a retry queue instead.
+- **Preventive Rule**: When you write `except Exception: log(...)` around a side
+  effect, write the reconciliation check in the same change. A swallow without one is
+  a silent data-loss path.
+- **Similar Situations**: Any fire-and-forget write — search indexing, cache
+  invalidation, webhook delivery, analytics events, thumbnail generation.
+
+### LL-0120 — A batch-level constraint handed to workers who each hold one instance makes them all correct in the same direction
+
+- **Root Cause**: A prior round had produced a batch defect: across nine items of one
+  type, a particular reassuring answer was never the correct one, so the answer was
+  guessable without reading the item. The lesson was recorded and fed to the next
+  round's brief. That round split the work across ten parallel workers, and five of
+  them held exactly one item of that type each. Every one of the five read the lesson
+  and made the reassuring answer correct in its own item. Four of five ended up keyed
+  the same way — the identical defect, inverted, and nobody could see it: each worker
+  held one instance and the property only exists across the set.
+- **Why It Happened**: The constraint is a property of the aggregate, but it was
+  distributed as guidance to agents who could each only observe their own item. Every
+  worker behaved correctly and the aggregate came out wrong. Rational agents given the
+  same rule and the same blindness converge — that is the expected outcome, not bad luck.
+- **Solution**: Any constraint that only exists across a batch must be *assigned*, not
+  advised — the coordinator computes the intended distribution up front and hands each
+  worker its share as a hard requirement. The same round did exactly this for another
+  batch property (which answer position is correct) by pre-generating a balanced,
+  non-periodic sequence and giving each worker its slice; that property came out
+  perfect while the advised one did not, in the same run, which is about as clean a
+  comparison as you get. Then verify the aggregate centrally afterwards, because the
+  assignment can still be misapplied.
+- **Preventive Rule**: If you cannot state a rule as "your share is X", the workers
+  cannot satisfy it. Compute it centrally or check it centrally — preferably both.
+- **Similar Situations**: Sharded test-data generation, load distribution across
+  workers, any fan-out that must satisfy a global quota, ratio, or balance.
+
+### LL-0121 — A batch property exists at several scales, and fixing it at one can create it at another
+
+- **Root Cause**: After finding that four of five items across a batch keyed the same
+  reassuring answer, the coordinator had two of them re-keyed. The batch-level ratio
+  came out right. But one of the re-keyed items belonged to a worker whose ten items
+  were now, as a set, uniformly keyed the other way — a defect at the per-worker scale
+  that had not existed before the fix, and that a later blind audit found and reported.
+- **Why It Happened**: The fix was aimed at the scale the measurement had used. The
+  same property (is the answer predictable without reading the item?) is real at the
+  file scale, the worker scale and the batch scale, and moving an item changes all
+  three at once. Only one was checked.
+- **Solution**: After correcting an aggregate property, re-measure it at every scale a
+  consumer could exploit, not just the one that produced the finding. Cheap to do —
+  the same query grouped differently.
+- **Preventive Rule**: State which scale a batch-level metric is measured at, and
+  check the others after any fix that moves items between groups.
+- **Similar Situations**: Rebalancing shards, quota redistribution, dataset splits
+  where a class balance holds globally but breaks per fold.
+
+### LL-0122 — Prose fields drift out of agreement with the validated structure beside them
+
+- **Root Cause**: Generated records carried both a validated structure (discrete
+  claims, each requiring a citation, mechanically checked) and free-text explanatory
+  fields with no schema. 37 of 100 records asserted a fact in the free-text fields
+  that appeared in no claim, and therefore carried no citation and was never checked
+  by anything. Three of those assertions contradicted the record's own cited claim —
+  one stated a diagnostic threshold of 15% where the record's cited claim said 10%,
+  another wrote a specific patient's value as if it were the general criterion, and a
+  third legitimised an answer that a different, already-published record scores as
+  wrong.
+- **Why It Happened**: Validation attaches to structure. The prose fields existed to
+  carry explanation, so nothing enforced that they agree with the structured claims
+  next to them, and a reader checking the record sees prose that sounds like the
+  record and moves on. The retrieval layer only indexes the structured claims, so the
+  prose is also invisible downstream — it is checked by neither the machine nor the
+  consumer.
+- **Solution**: Treat an unvalidated field sitting beside a validated one as a place
+  where facts hide. Either bring load-bearing assertions into the structured form
+  (where the citation requirement applies), or scope the prose explicitly to
+  restating what the structure already says. At minimum, measure the gap: count
+  records whose prose names an entity that appears in no structured claim.
+- **Preventive Rule**: If two fields can state the same fact and only one is
+  validated, they will eventually disagree. Decide which is authoritative and make
+  the other derive from it or defer to it.
+- **Similar Situations**: A description field next to structured attributes, a
+  README next to a config schema, docstrings against type signatures, denormalized
+  summary columns.
+
+### LL-0123 — A fabricated citation can have every component real except the title
+
+- **Root Cause**: Generated content was required to cite only sources it was
+  confident existed, and was explicitly banned from inventing page numbers, DOIs or
+  URLs — a rule that held. It still produced six citations pairing a genuine,
+  well-known organization with a document title the model had constructed rather
+  than recalled. These pass every check a human applies at a glance: the organization
+  is real, it does publish on that topic, the title is plausible. Two further
+  instances were real regulations described in paraphrase rather than cited. The
+  producing agent self-reported five; a reviewer reading only the citation list found
+  eight.
+- **Why It Happened**: The anti-fabrication rule was written against the parts that
+  look obviously invented — locators, identifiers, links. A title is prose, so it was
+  generated like prose, and the plausibility that makes a good title is exactly what
+  makes a fabricated one undetectable.
+- **Solution**: Audit citations as a list, separately from the content they support,
+  and classify each as (a) a document you are confident exists under that exact title,
+  (b) a real body with a constructed title, or (c) unidentifiable. Class (b) is the
+  one that survives ordinary review. When a title cannot be confirmed, DELETE it and
+  re-point the claim at a source that can be — never substitute a better-sounding
+  guess — and check whether any claim was resting on it alone.
+- **Preventive Rule**: "Don't invent identifiers" is not the same instruction as
+  "don't invent titles". Say both. And never let a claim's only support be a citation
+  no one has confirmed.
+- **Similar Situations**: Bibliographies, standards references, legal and regulatory
+  citations, links to internal documents in generated runbooks.
+
+### LL-0124 — A worker must run the project's own gate before it reports, or the coordinator becomes the gate
+
+- **Root Cause**: Ten parallel workers produced structured records against a project
+  validator that catches, among other things, a record citing a reference id absent
+  from its own bibliography. Four of the ten shipped that exact defect — 32 instances
+  — and reported success. The coordinator ran the validator afterwards and sent every
+  one of them back. Each fixed its own defects unprompted, in minutes, because the
+  tool told them precisely what was wrong.
+- **Why It Happened**: The brief described the validator as the round's quality gate
+  but never said when to run it, so workers treated it as the coordinator's step.
+  Nothing was wrong with the tool or the workers; the sequencing was simply unstated,
+  and every worker guessed the same way.
+- **Solution**: Make running the gate part of the worker's definition of done, stated
+  in the prompt as a step before the final report, with the expected output ("0
+  errors"). The cost is one command per worker; the alternative is a full round trip
+  per worker plus a coordinator that has become a bottleneck for mechanically
+  detectable problems.
+- **Preventive Rule**: Any check a worker *can* run, it *must* run before reporting.
+  Reserve the coordinator's run for confirming the aggregate.
+- **Similar Situations**: Linters and type checks before opening a PR, schema
+  validation before submitting generated data, pre-commit hooks, CI as a backstop
+  rather than a first line.
+
+<!--
+Template for new entries — copy this block:
 
 ### LL-NNNN — Short, specific title
 
