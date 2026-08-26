@@ -4946,3 +4946,30 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
   mixing `kubectl`/API calls with local volume paths; DB admin scripts that pair a
   remote connection string with local dump files; monitoring that health-checks a
   tunneled port and concludes the *local* service is up.
+
+### LL-0131 — Tailscale serve proxies as operator but serving a filesystem path needs root; on a no-sudo host, front static files with a localhost container
+
+- **Root Cause**: `tailscale serve --set-path=<dir>` makes tailscaled (a root daemon)
+  read the files itself, so it demands root or sudo-capable operator; proxy targets
+  (`--set-path=<path> http://127.0.0.1:<port>`) only need the operator grant. On a host
+  where passwordless sudo is deliberately revoked, the file-serving form is simply
+  unavailable, and the error only appears at setup time.
+- **Why It Happened**: Every prior serve mount on the host was a proxy (n8n, qdrant), so
+  the operator grant looked sufficient for "serve anything over the tailnet". The
+  file-vs-proxy privilege split isn't visible until the first filesystem target.
+- **Solution**: Keep the files under the unprivileged user, serve them with a minimal
+  `nginx:alpine` container bound to `127.0.0.1` (`restart: unless-stopped`, so it
+  survives reboots without root — the user is already in the docker group), and mount it
+  via `tailscale serve --set-path=/app http://127.0.0.1:<port>/app` as operator. Bonus of
+  path-mounting on the same HTTPS origin that already proxies the backing API: the
+  static page's API calls become same-origin, so no CORS configuration anywhere. Pair it
+  with a hostname switch in the frontend (`localhost` → dev API base, anything else →
+  relative same-origin path) and one copy of the files serves both dev and tailnet.
+- **Preventive Rule**: On a locked-down host, treat `tailscale serve` as proxy-only.
+  Anything that must come off disk gets a localhost-bound server owned by the
+  unprivileged user, then a proxy mount. Check privilege requirements of a root daemon's
+  convenience features before designing around them.
+- **Similar Situations**: systemd system units vs user units without lingering enabled;
+  "just serve this folder" features of any root-owned daemon (Caddy admin API, system
+  nginx config) on a no-sudo box; static frontend + API CORS pain that path-based
+  same-origin mounting dissolves.
