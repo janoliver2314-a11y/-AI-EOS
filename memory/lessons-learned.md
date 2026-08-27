@@ -4973,3 +4973,56 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
   "just serve this folder" features of any root-owned daemon (Caddy admin API, system
   nginx config) on a no-sudo box; static frontend + API CORS pain that path-based
   same-origin mounting dissolves.
+
+### LL-0132 — Hosted integrations can rewrite content at storage time; verify the stored artifact, not what you submitted
+
+- **Root Cause**: The Gmail MCP connector's `create_draft`/`update_draft` pass the body
+  through a server-side sanitizer that rewrites every URL — in the plaintext AND HTML
+  parts alike — into a `https://www.google.com/url?q=<original>&ust=<expiring
+  timestamp>` redirect (one rewrite even downgraded `https://` to `http://`). The
+  stored draft, i.e. exactly what would go out on send, differed from the submitted
+  content, and outreach email carrying Google tracking-redirects reads as spam.
+- **Why It Happened**: A draft API was assumed to store content verbatim; nothing in
+  the tool's contract said otherwise, and the damage was only visible because the user
+  happened to open the draft in Gmail before sending. Every workaround (bare domain in
+  plaintext, explicit `<a href>` anchors in an authored HTML body) was also rewritten —
+  the wrapping is unconditional at the storage layer, so there was nothing to outsmart.
+- **Solution**: Abandoned connector-created drafts for anything recipient-facing.
+  Deliverables became copy-paste text (Gmail compose links a pasted URL cleanly on
+  send) or direct sends through a provider API that stores verbatim (Resend, with
+  click-tracking off). The wrapped drafts were moved to Trash immediately so a broken
+  version could not be sent by accident.
+- **Preventive Rule**: After writing content through any hosted integration, read the
+  STORED artifact back and diff it against what was submitted — URLs especially —
+  before it can reach a recipient. If the platform rewrites, route around it with a
+  channel that stores verbatim; do not iterate against a sanitizer you cannot disable.
+- **Similar Situations**: ESP click-tracking rewrites (Mailchimp, SendGrid) on
+  transactional mail; Proofpoint/Safe Links URL-defense wrapping quoted back into
+  replies; CMSes and rich-text editors "cleaning" pasted HTML; Slack/Teams link
+  handling; any API whose read-back is assumed identical to the write.
+
+### LL-0133 — One-time secrets in unstructured tool output can truncate against adjacent text; validate the token's shape before relaying it
+
+- **Root Cause**: A create-API-key tool returned the secret run together with its own
+  boilerplate — `Token: re_…iUEkdUAs5IMPORTANT: The token above is only shown once` —
+  with no delimiter. Relaying the key, the final character was mis-read as the first
+  letter of "IMPORTANT", and the truncated key produced an SMTP `535 Authentication
+  credentials invalid` that looked exactly like a wrong-credential or wrong-port
+  problem.
+- **Why It Happened**: The output concatenated fields without a separator; the token
+  is shown exactly once, so there was no authoritative source to re-read; and both
+  candidate boundaries produced plausible-looking keys, so the wrong guess wasn't
+  visibly wrong.
+- **Solution**: The provider's key format is deterministic (Resend: `re_` + 8 chars +
+  `_` + 24 chars). Counting characters against that shape located the missing final
+  character; the corrected key authenticated immediately. Subsequent one-time-secret
+  relays were boundary-checked against the known format before handover.
+- **Preventive Rule**: Before relaying a shown-once secret out of unstructured tool
+  output, validate it against the provider's published token shape (prefix, length,
+  charset) and find field boundaries by format, not by eye. If the shape is unknown,
+  prove the credential with a cheap authenticated call before delivering it — a failed
+  guess costs a revoke-and-reissue cycle plus a misleading downstream auth error.
+- **Similar Situations**: terminal line-wrap splitting a pasted key; tokens embedded in
+  JSON error strings or log lines next to punctuation; OTPs quoted mid-sentence;
+  base64 blobs abutting prose; any 535/401 immediately after manually transporting a
+  credential — check transport fidelity before debugging the auth system.
