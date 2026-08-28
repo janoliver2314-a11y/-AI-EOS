@@ -569,3 +569,32 @@ Earlier: 2026-07-25 (worktree post-dispatch verification, stalled-subagent
 diagnosis) and 2026-07-01 (repository bootstrap) — the bootstrap note about
 this file growing as concrete code patterns emerge in `src/` still applies,
 no `src/` patterns yet._
+
+## Pattern: Local LLM tier for automation pipelines (Ollama on the home server)
+
+**Used in**: "LNC - Reply Triage (Ollama)" and "Ops - Nightly Log Triage
+(Ollama)" n8n workflows on the EliteDesk home server (both live 2026-08-28).
+
+**Shape**: high-volume, low-stakes text chores (classify, summarize, extract,
+embed) run on a local Ollama instead of a cloud API — free per call, private
+by construction (text never leaves owned hardware), always on. The Ollama
+container is resource-capped (mem_limit, cpus) so a model can never starve
+the production stack sharing the box. Every consumer follows three rules:
+(1) output shape enforced with a JSON Schema in Ollama's `format` field,
+never prose instructions alone (LL-0134); (2) instructions placed AFTER the
+content when content dwarfs them; (3) a validation-and-fallback branch so a
+bad model answer degrades to a labeled error notification, never a silent
+wrong action. Big models and client-facing prose stay with cloud APIs — the
+local tier is the intern, not the author.
+
+**Access map** (EliteDesk, `~/stacks/ollama`, models llama3.2:3b +
+nomic-embed-text): n8n workflows → `http://ollama:11434` (shared docker
+network); processes on the server host → `127.0.0.1:11434`; other containers
+→ join the `ollama_default` network (one compose line, per project, deliberate);
+Mac-side projects → `localhost:11434` via the elitedesk SSH-tunnel LaunchAgent
+(added 2026-08-28); public internet / Vercel → never, by design.
+
+**When to use**: any automation step that reads or tags text repeatedly and
+where "pretty good, instant, free, private" beats "brilliant but metered" —
+and as the default home for anything touching legally or medically adjacent
+text that should not transit a third-party API.
