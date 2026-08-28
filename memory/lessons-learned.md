@@ -5026,3 +5026,35 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
   JSON error strings or log lines next to punctuation; OTPs quoted mid-sentence;
   base64 blobs abutting prose; any 535/401 immediately after manually transporting a
   credential — check transport fidelity before debugging the auth system.
+
+### LL-0134 — Small local LLMs drop format instructions buried before long content; enforce output shape with a schema, not prose
+
+- **Root Cause**: A 3B local model (llama3.2:3b via Ollama) was asked to return
+  `{"verdict": ..., "findings": [...]}` for a nightly log-triage job, with the
+  instruction placed at the top of the prompt followed by ~150 collapsed log lines.
+  On the first real run the logs contained JSON-shaped UFW firewall-block entries;
+  the model echoed one of those back as its "JSON answer" instead of the verdict.
+  Ollama's bare `format: "json"` guaranteed *valid* JSON, not the *right* JSON.
+- **Why It Happened**: The prompt had worked in short synthetic tests. At real
+  content length, instructions stated once before thousands of tokens of pastable
+  look-alike material lose the attention contest in small models — and the content
+  itself offered a lazy completion (log lines that already look like JSON). The
+  format-vs-schema distinction was invisible until real data exercised it.
+- **Solution**: Two changes, both required: (1) passed a full JSON Schema in
+  Ollama's `format` field (object with a `verdict` enum and bounded `findings`
+  array), which constrains decoding so off-schema output is impossible; (2) moved
+  the task instructions AFTER the content ("--- end of logs --- Now give your
+  verdict..."), where small models actually attend, and tightened the content cap.
+  Re-run on the same real logs produced a correct schema-conforming verdict.
+- **Preventive Rule**: For any small-model pipeline that must emit structured
+  output, enforce the shape mechanically (Ollama `format` JSON Schema / grammar /
+  constrained decoding), never with prose alone — and place instructions after the
+  content when the content dwarfs them. Test with real-scale, adversarially
+  ordinary data (real logs, real emails) before trusting a prompt proven only on
+  short synthetic cases; keep a validation-and-fallback branch anyway, so a
+  malformed answer degrades to a labeled error rather than a silent wrong action.
+- **Similar Situations**: classification prompts where the text being classified
+  contains examples of the label vocabulary; summarizers fed documents that quote
+  other summaries; extraction over HTML/JSON-bearing pages; any "reply only
+  with X" prompt whose payload contains X-shaped strings; instruction-at-top
+  prompts that regress when context length grows.
