@@ -5058,3 +5058,41 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
   other summaries; extraction over HTML/JSON-bearing pages; any "reply only
   with X" prompt whose payload contains X-shaped strings; instruction-at-top
   prompts that regress when context length grows.
+
+### LL-0135 — Similarity dedup on templated content must embed the discriminating field, and findings must be joined against the coverage plan
+
+- **Root Cause**: An embedding-based near-duplicate scan of a 2,135-question
+  NCLEX bank compared question STEMS only. Prioritization-style questions use a
+  deliberately templated stem ("place the clients in the order the nurse should
+  assess them") with all clinical content in the options field — so the scan's
+  headline finding, a "1.000 identical" pair, was two legitimately different
+  questions, and 412 flagged pairs were mostly template echoes. Separately, the
+  scan ranked pairs with no reference to the test-plan blueprint each question
+  was generated against, so "delete the duplicate" would have been wrong even
+  for true positives whose twin covered a different blueprint slot.
+- **Why It Happened**: The stem looked like "the question" and was the obvious
+  single text column to embed; short synthetic checks can't expose a bias that
+  only appears where a content family shares boilerplate. And dedup was framed
+  as a text problem when it was a coverage problem: the bank exists to satisfy
+  a blueprint, so duplication is only meaningful relative to slot assignments.
+  The flaw surfaced because the user asked "have you checked the test plan?" —
+  not because the pipeline caught it.
+- **Solution**: Re-ran the scan embedding stem + options (the discriminating
+  field), which collapsed 412 flagged pairs to 101 real ones; joined every pair
+  against its `content_example_id` and split the report into same-slot pairs
+  (true redundancy — retiring one costs no coverage) and cross-slot pairs
+  (coverage defects — one of the pair must be REVISED to address its assigned
+  slot; deletion would leave a hole). Read-only throughout; the report tells
+  the human which action class each pair belongs to.
+- **Preventive Rule**: Before running similarity dedup, ask which field
+  actually discriminates instances within each content family, and embed that —
+  a shared template inflates similarity of everything built on it. And never
+  report duplicates as deletion candidates in a corpus that exists to satisfy a
+  coverage plan: join every finding against the plan first, because the same
+  similarity score means "redundant" in one slot and "miscovered" across two.
+- **Similar Situations**: dedup over form letters, contracts on one boilerplate,
+  or scaffolded code files where only a config block differs; log dedup where
+  the message template matches but parameters differ; test-suite dedup that
+  ignores which requirement each test traces to; any "delete the duplicate"
+  recommendation over items that carry per-item obligations (blueprint slots,
+  legal clauses, compliance controls).
