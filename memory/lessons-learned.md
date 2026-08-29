@@ -5096,3 +5096,70 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
   ignores which requirement each test traces to; any "delete the duplicate"
   recommendation over items that carry per-item obligations (blueprint slots,
   legal clauses, compliance controls).
+
+### LL-0136 — RAM training failures can be module×slot specific: cross-test brands per slot before blaming the stick, the slot, or the board
+
+- **Root Cause**: An HP EliteDesk 800 G6 Mini refused to POST with a pair of
+  OWC 32GB DDR4 SODIMMs in any two-stick or upper-slot configuration, while
+  each OWC stick ran perfectly alone in the lower slot. The failing element was
+  the *combination*: the OWC modules carry a barely-programmed SPD chip
+  (Manufacturer 0x0000, corrupt part number), giving the BIOS junk calibration
+  data, and the upper slot sits on a longer, less forgiving signal path. A
+  properly-programmed dual-rank Corsair stick trained in the same upper slot on
+  the first try.
+- **Why It Happened**: Every early hypothesis was single-factor — dead stick,
+  dead slot, stale training data, BIOS too old, or a hard 32GB platform cap
+  (reinforced by SMBIOS type 16 reporting "Maximum Capacity: 32 GB"). Each
+  single-factor test produced partial, seemingly contradictory evidence, and
+  the SMBIOS field looked authoritative when it was actually junk: it kept
+  reading 32 GB even while 48GB was installed and running.
+- **Solution**: A cross-test matrix with a second brand settled it in one
+  session: OWC-alone-lower ✓ (both sticks), Corsair-pair-both-slots ✓
+  (dual-channel), OWC-lower + Corsair-upper = 48GB ✓, OWC pair ✗ even after a
+  CMOS clear. That isolates "OWC module in upper slot" as the only failing
+  factor, clears the board of every suspected defect, and exposed the SMBIOS
+  capacity field as meaningless. Kept the working 48GB mixed config.
+- **Preventive Rule**: When memory won't train, don't binary-search one
+  variable — build a small brand×slot matrix (each stick alone per slot, a
+  known-good second brand in the same slots, one mixed config) before
+  concluding anything; a stick can be simultaneously "good" (works in slot A)
+  and "unusable" (fails in slot B). Prefer modules with fully programmed SPDs
+  from the platform's qualified-vendor list for compact/OEM machines, and never
+  trust dmidecode/SMBIOS "Maximum Capacity" as evidence of a real limit —
+  verify capacity claims empirically.
+- **Similar Situations**: PCIe/NVMe devices that fail in one M.2 slot but work
+  in another (lane/signal marginality); USB devices failing only through a
+  specific port or hub; DP/HDMI cables that work at 1080p but not 4K on longer
+  runs; any diagnosis where two individually-proven-good parts fail only in
+  combination and single-factor testing keeps producing contradictions.
+
+### LL-0137 — GRUB_GFXMODE cannot pin the Linux console resolution: KMS re-modesets to native; use a video= kernel parameter
+
+- **Root Cause**: To make a 4K TV readable as a headless server's console, the
+  console was configured with `GRUB_GFXMODE=1920x1080` plus
+  `GRUB_GFXPAYLOAD_LINUX=keep`. This alone would have silently failed: those
+  settings only govern the resolution GRUB itself hands over — as soon as the
+  kernel's KMS driver (i915 here) initializes, it re-modesets the framebuffer
+  to the display's native mode (3840×2160), reverting the console to tiny text.
+- **Why It Happened**: The GRUB options read as if they control "the console
+  resolution", and on pre-KMS systems they effectively did. The
+  driver-overrides-bootloader behavior is invisible until first reboot, on
+  exactly the kind of headless box where nobody is watching the console.
+- **Solution**: Added `video=1920x1080@60` to `GRUB_CMDLINE_LINUX_DEFAULT` (via
+  a drop-in at `/etc/default/grub.d/tv-console.cfg`, appending to the inherited
+  value rather than overwriting it) alongside the GFXMODE lines, then
+  `update-grub` and reboot. Verified with
+  `/sys/class/graphics/fb0/virtual_size` → 1920,1080 and `video=` present in
+  `/proc/cmdline`. Paired with console-setup's largest font (TerminusBold
+  16x32, set non-interactively in `/etc/default/console-setup` + `setupcon`,
+  which applies live with no reboot) for ~4× text size overall.
+- **Preventive Rule**: To force a specific Linux console resolution on any KMS
+  system, set it as a `video=` kernel parameter — GRUB_GFXMODE only covers the
+  boot menu. Ship /etc/default/grub changes as grub.d drop-ins that append to
+  `GRUB_CMDLINE_LINUX_DEFAULT`, and verify after reboot from the running kernel
+  (`/proc/cmdline`, `fb0/virtual_size`) rather than trusting the config.
+- **Similar Situations**: any bootloader-level setting silently superseded by a
+  later init stage (BIOS fan curves vs OS fan control, initramfs network config
+  vs netplan); console font resets because a change was made with `setupcon`
+  only and never persisted to `/etc/default/console-setup`; framebuffer
+  settings that behave differently once a GPU driver module loads late.
