@@ -5163,3 +5163,39 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
   vs netplan); console font resets because a change was made with `setupcon`
   only and never persisted to `/etc/default/console-setup`; framebuffer
   settings that behave differently once a GPU driver module loads late.
+
+### LL-0138 — Swapping in a slower model changes the latency envelope: audit pipeline timeouts sized to the old model before switching
+
+- **Root Cause**: After upgrading an n8n log-triage pipeline from llama3.2:3b to
+  llama3.1:8b on a CPU-only server, the first production run failed with the
+  pipeline's CLASSIFIER_ERROR fallback. The HTTP node calling Ollama had a
+  5-minute timeout sized (implicitly) to the 3b model; the 8b prefills the
+  ~6.6k-token log prompt at ~22 tok/s ≈ 5.5 minutes, so the request was cut off
+  at exactly 5m0s — before generation of the verdict even began.
+- **Why It Happened**: The model swap was validated with a short benchmark
+  prompt (seconds), which measured generation speed but not the prefill time of
+  the pipeline's real, log-heavy payload. Timeouts are invisible configuration:
+  they encode an assumption about the old model's speed and fail only on the
+  first realistic-size input. Five sibling workflows with small prompts worked
+  fine, making the failure look model-specific rather than config-specific.
+- **Solution**: Read the Ollama container log, which showed prompt-processing
+  progress terminating at the exact timeout (`500 | 5m0s | POST /api/generate`,
+  "cancel task"). Raised that one node's timeout to 15 minutes (a nightly batch
+  job — latency is irrelevant), re-ran the real collector end-to-end: verdict
+  arrived in ~8 minutes, schema-conforming. The fail-open error path (push a
+  CLASSIFIER_ERROR notification instead of dying silently) worked as designed
+  and is what made the failure immediately visible.
+- **Preventive Rule**: When swapping a model in any pipeline, list every
+  timeout between caller and model (HTTP node, gateway, client library) and
+  re-derive them from the new model's speed on the pipeline's LARGEST real
+  payload — benchmark prefill on a realistic prompt, not just generation on a
+  toy one. Estimate: prompt_tokens ÷ prefill-tok/s + expected output ÷
+  gen-tok/s, then set the timeout at ≥2× that. Always test the swap end-to-end
+  with production-sized input before calling it done, and keep a fail-open
+  error branch so a timeout surfaces as an alert, not silence.
+- **Similar Situations**: moving an API call from a small to a large model tier
+  (or a faster to a cheaper provider) behind unchanged client timeouts; DB
+  query timeouts after adding data volume; CI step timeouts after adding tests;
+  webhook/gateway timeout chains where the outermost layer (e.g. a 30s LB
+  limit) silently caps a raised inner timeout; batch jobs that pass on synthetic
+  input but time out on the first full-size production payload.
