@@ -5199,3 +5199,80 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
   webhook/gateway timeout chains where the outermost layer (e.g. a 30s LB
   limit) silently caps a raised inner timeout; batch jobs that pass on synthetic
   input but time out on the first full-size production payload.
+
+### LL-0139 — A green suite over fixtures proves your arithmetic, not your field names; verify names against the live schema
+
+- **Root Cause**: A metrics function for an ops dashboard read
+  `q.get("review_status")` from rows of a `questions` table whose review-stage
+  column is actually named `current_stage`. `dict.get` returns `None` rather
+  than raising, so every row bucketed as `"unknown"` and the function reported
+  `published_total: 0` against a bank of 2135 published items — a plausible,
+  quietly catastrophic number on a page whose entire value is being trustable
+  without verification. Eight unit tests over fixtures passed throughout.
+- **Why It Happened**: The fixtures were written from the same mistaken belief
+  as the code, so they agreed with each other and with nothing else. The wrong
+  name came from reading a migration's CHECK constraint, which listed the
+  stage *values* (`'ai_generated' … 'published'`) — the values were right, the
+  column holding them was not, and a constraint body does not name its column
+  at the point you read it. Compounding it, the one real dataset on hand was a
+  nightly learner-data export that deliberately excludes content tables, so
+  the dataset used for every earlier validation *could not* have touched the
+  table in question. The bug survived a spec, a plan, an implementation and a
+  browser render; it was found only because the user asked for the numbers to
+  be double-checked before proceeding.
+- **Solution**: Queried `information_schema.columns` on the live database,
+  found `current_stage`, fixed the reader. Then verified every metric on the
+  page a *second* way — independent SQL aggregates against the same database —
+  rather than re-running the same code and treating agreement as proof. Nine
+  of nine matched after the fix. Also corrected the spec and plan documents,
+  which still encoded `review_status` and would have reproduced the bug
+  verbatim in the hands of the next implementer.
+- **Preventive Rule**: For any code addressing a datastore by field name,
+  verify the names against the live schema (`information_schema`, `\d`,
+  `describe`, an OpenAPI doc) before trusting a green suite. A fixture is
+  evidence about logic you wrote; it is never evidence about a system you did
+  not. Treat `.get(key, default)` and its equivalents as *silencers*: they
+  make "wrong key" indistinguishable from "legitimately absent", so anywhere
+  the distinction matters, assert the key exists or fail loudly. And validate
+  a computed figure against an independently derived one — a second query, a
+  known-good total — not a second run of the same function.
+- **Similar Situations**: third-party API response fields read with `.get`;
+  JSON webhook payload keys; `os.environ.get("NAME", default)` where a typo
+  silently yields the default; config/YAML keys; CSV header drift; any
+  dict-based access without a schema; ORM-free SQL where a renamed column
+  returns NULL rather than erroring; feature flags read by string name. Also
+  any validation dataset that is a *filtered* extract — if the extract omits
+  the entity under test, passing against it proves nothing about it.
+
+### LL-0140 — A denominator drawn from a table that only holds processed rows reports 100% complete forever
+
+- **Root Cause**: A coverage metric was about to be shipped as "NAS statements
+  covered ÷ statements in table". The table (`nursing_activity_statements`)
+  is populated only with the statements already worked on — 36 of them — so
+  the ratio evaluates to 36/36 = **100%**, while roughly three quarters of the
+  real source (a ~149-statement exam Test Plan) had never been touched. The
+  number is arithmetically correct and semantically the opposite of the truth.
+- **Why It Happened**: The denominator was chosen because it was *available*
+  in the database, not because it represented the universe being measured. A
+  table named for a domain concept reads like the authoritative set of that
+  concept, when in fact it was a work queue that only ever gained rows as
+  work completed. The true total existed only as an approximation in a prose
+  memory file, with no master checklist anywhere in the repository — so there
+  was no honest denominator to divide by at all.
+- **Solution**: Reported coverage as an absolute **count** (36 covered), and
+  exposed the ~149 total under a key explicitly naming it an estimate, with a
+  test asserting that no percentage key exists for that metric. The
+  possibility of the misleading ratio was removed rather than documented.
+- **Preventive Rule**: Before computing any percentage, name the universe the
+  denominator is supposed to represent and check the source actually contains
+  it — including the rows that have *not* been processed. If a table gains
+  rows only as work completes, it can never be the denominator of a
+  completion metric. When no trustworthy total exists, publish the numerator
+  alone: a bare count is honest, and a confident percentage over a wrong
+  denominator is worse than no metric, because it terminates the enquiry.
+- **Similar Situations**: "tests passing ÷ tests collected" when collection
+  errors silently drop files; migration or backfill progress measured against
+  a queue that is drained as it is processed; "documents indexed ÷ documents
+  in index"; error rates over a log source that only retains handled errors;
+  survey completion over respondents who reached the final page; coverage
+  metrics over a manifest generated from the same scan being measured.
