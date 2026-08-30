@@ -5399,3 +5399,65 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
   slow requests; email/webhook bodies clipped by a gateway; support-ticket
   context windows; any prompt assembled by concatenation until a budget is
   reached, where the last section appended is the first to disappear.
+
+### LL-0141 — Never mutate a file while an interactive command is mid-flight on it; and never share a temp filename
+
+- **Root Cause**: A user's `.env` was reduced from 15 keys to 1. Two edits ran
+  concurrently against the same file using the same temp path. The user's
+  command did `grep -v KEY .env > .env.tmp`, then **blocked at a `read` prompt**
+  waiting for a pasted value. During that wait — minutes, not milliseconds — a
+  second edit ran `grep -v OTHER .env > .env.tmp && mv .env.tmp .env`, which
+  overwrote the first command's temp file and then moved it away entirely. When
+  the user finally pasted, the waiting command appended to a now-nonexistent
+  path, creating a fresh file containing only that one line, and `mv`'d it over
+  the original. Five API keys had to be re-issued; they existed nowhere else.
+- **Why It Happened**: The read-modify-write window was assumed to be
+  instantaneous. An interactive prompt inside a pipeline turns that window into
+  an unbounded one, and a hardcoded temp name (`.env.tmp`) guarantees collision
+  rather than merely risking it. The second edit was also unnecessary — it
+  removed a harmless unused line — so a change with no upside destroyed data.
+- **Solution**: Restored what could be restored from other copies (a server
+  backup, CI config, a sibling env file); the rest were re-issued from provider
+  dashboards. Vercel could not help: its environment variables are stored as
+  type `sensitive`, which is **write-only by design** and unreadable by anyone,
+  including the account owner.
+- **Preventive Rule**: Never write to a file while another party has an
+  interactive command open against it — hand over the command and stay out.
+  Always use `mktemp` rather than a fixed temp name, so two runs cannot collide.
+  Prefer append-only edits (`>>`) over read-modify-write for secret files.
+  And weigh the change: cosmetic cleanup of a file whose loss is expensive is
+  negative expected value.
+- **Similar Situations**: two agents or two terminals editing one config; a
+  script with a `read`/`select`/pager inside a rewrite pipeline; CI jobs sharing
+  `/tmp/build.lock`; `sed -i` on a file an editor holds open; any
+  `cmd file > file.tmp && mv` pattern run more than once concurrently; database
+  migrations run twice against one schema.
+
+### LL-0142 — A 403 from an edge proxy and a 403 from an API mean different things; read the body before inferring a permission model
+
+- **Root Cause**: `GET https://api.resend.com/emails` returned HTTP 403 with the
+  body `error code: 1010`. This was read as "the API key lacks read scope", and
+  a whole design decision followed from it — a collector was re-planned around a
+  different data source, and the user was asked to create a new API key they did
+  not need. `1010` is a **Cloudflare** bot-management code: the request was
+  blocked at the edge because of `urllib`'s default User-Agent and never reached
+  the API at all. The same request through `httpx` returned 200 with the
+  original key.
+- **Why It Happened**: The status code was treated as the whole signal and the
+  body as noise. A four-character body that is not JSON, does not name the
+  service, and does not resemble the provider's documented error shape is itself
+  the tell — the response did not come from the API being called.
+- **Solution**: Retried the identical request through a different HTTP client,
+  got 200, retracted the diagnosis in the plan document and the PR, and kept
+  both data sources because they turned out to measure different things.
+- **Preventive Rule**: On any 4xx from a third-party API, read the response body
+  and check whether it looks like that provider's error format before inferring
+  anything about credentials or scopes. If it does not, suspect an intermediary
+  (WAF, CDN, proxy, corporate TLS inspection) and retry with a realistic
+  User-Agent or a different client. Never ask a user to issue new credentials on
+  the strength of a status code alone.
+- **Similar Situations**: Cloudflare `1010`/`1020`/`1015` and Akamai reference
+  codes read as auth or rate-limit failures; 403 from an S3 bucket policy vs
+  from IAM; 401 from an ingress vs from the app; HTML error pages returned to a
+  JSON client; corporate proxies returning 407 mid-pipeline; `curl` succeeding
+  where a library fails purely on User-Agent or TLS fingerprint.
