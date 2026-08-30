@@ -5276,3 +5276,126 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
   in index"; error rates over a log source that only retains handled errors;
   survey completion over respondents who reached the final page; coverage
   metrics over a manifest generated from the same scan being measured.
+
+### LL-0141 — A model asked to compare two numbers will eventually invert it; evaluate thresholds in code and leave the model prose
+
+- **Root Cause**: A nightly log-triage pipeline asked llama3.1:8b for an
+  OK/ATTENTION verdict over server logs that included disk, memory and backup
+  figures. Once those figures actually reached the model (they had previously
+  been truncated away — see LL-0143), it reported "Disk usage at 14% which is
+  above the 80% threshold" and raised a high-priority phone alert. 14 is not
+  above 80.
+- **Why It Happened**: The model was handed both the data and the decision.
+  Comparing magnitudes reads like a language task but is arithmetic, which small
+  models do unreliably and confidently. The threshold lived in the prompt
+  ("ATTENTION only for disk usage over 80%"), where it is not a constraint at
+  all — just more tokens competing for attention — so the model reproduced the
+  *shape* of a correct finding with the comparison inverted. Nothing downstream
+  could contradict it, because the model's output *was* the verdict.
+- **Solution**: Moved every numeric check into the pipeline's code step — disk
+  percent, memory percent available, backup age, container status and restart
+  counts — parsed from labelled sections and compared with ordinary operators.
+  The model's schema changed from `{verdict, findings}` to `{summary, concerns}`
+  and it is told the numbers are already checked and not to comment on them. The
+  verdict became a ladder: ATTENTION (high priority) only when a code check
+  trips; REVIEW (normal) for model-only qualitative concerns; OK (low); and
+  CLASSIFIER_ERROR (normal) when the model returns nothing — in which case the
+  numeric checks have still run and still hold. Verified with seven synthetic
+  broken-server payloads (all fire) and seven verdict cases, including "disk
+  full and the model is dead" (still ATTENTION) and "the model repeats the
+  14%/80% claim" (capped at normal priority, cannot page anyone).
+- **Preventive Rule**: Never let a model evaluate a threshold, compare
+  magnitudes, or compute a rate. Parse the value in code and apply the operator
+  in code; hand the model only the qualitative residue that code cannot express.
+  Where the model's judgement is still wanted, cap its authority rather than
+  trusting it — its opinions earn a lower severity than facts the code proved,
+  so a wrong opinion degrades to a nudge instead of an alarm. And keep the
+  deterministic path independent of the model, so the checks still run when the
+  model is unavailable. This is distinct from LL-0134, which constrains the
+  model's output *shape*; this entry constrains what it is allowed to *decide*.
+- **Similar Situations**: LLM-judged SLA, latency or error-rate breaches;
+  "is this invoice over the approval limit"; agents deciding whether a coverage
+  or budget figure passes; date arithmetic ("has this expired", "is this stale");
+  version or size comparisons; scoring rubrics with numeric cutoffs; any prompt
+  that states a numeric rule and asks for a verdict — especially one where the
+  model must also summarise, so the rule competes with a second task.
+
+### LL-0142 — A substring filter over logs matches the metric that means the opposite; anchor on severity tokens, not bare words
+
+- **Root Cause**: A log collector selected "error-ish" container lines with
+  `grep -iE 'error|warn|fail|fatal|exception|panic'`. The ntfy service emits a
+  status line every 60 seconds containing `emails_sent_failure=0` and
+  `emails_received_failure=0` — counters reporting that nothing had failed. All
+  1,417 of them matched on the substring `fail` and were collected as errors.
+  Ollama contributed the same way via `consecutive_failures=0`.
+- **Why It Happened**: The filter was written against an intuition of what an
+  error line looks like, not against the actual corpus. Structured logs
+  routinely embed outcome words inside metric keys, and a zero-valued failure
+  counter is the strongest possible evidence of health while being textually
+  indistinguishable from a failure report. The filter was never validated by
+  looking at what it selected — only at whether it ran — so a 1,417-line false
+  positive was invisible until its downstream effect was traced.
+- **Solution**: Anchored the filter on severity markers rather than bare words
+  (`level=(ERROR|WARN)`, `[error]`, standalone `ERR|FATAL|PANIC` tokens) and
+  added an explicit exclusion for counter-shaped noise (`_failures?=0`,
+  `failures=0`) plus the specific periodic status lines. Verified by diffing
+  what the filter selected before and after against 24h of real logs: the ntfy
+  section went from 1,417 lines to none, while the one genuine Ollama WARN
+  survived. Also silenced the source (`NTFY_LOG_LEVEL: warn`), on the principle
+  that noise is cheapest to remove where it is produced.
+- **Preventive Rule**: Never validate a log filter by whether it executes —
+  print what it selected and read it. Match severity as a *field* (`level=`,
+  a leading bracketed tag, a syslog priority) rather than as a word that may
+  appear anywhere in a payload, and remember that structured logs carry
+  outcome vocabulary inside key names, where `=0` usually inverts the meaning.
+  When a filter feeds something with a size limit, measure the selected volume
+  as well as its content: a filter that is merely imprecise becomes a
+  correctness bug the moment its output is truncated.
+- **Similar Situations**: alerting regexes over JSON logs where keys are named
+  `error_count`, `failed_jobs`, `retry_failures`; grepping metrics endpoints or
+  Prometheus exposition text; `grep -i error` over CI output that prints
+  "0 errors"; log-based SLO queries; secret scanners matching the word
+  "password" in a config *key*; content moderation on substrings; any keyword
+  rule applied to text that also describes the keyword's own absence.
+
+### LL-0143 — A truncation cap silently discarded the input a monitor existed to check, so it reported OK on data it never saw
+
+- **Root Cause**: A nightly log-triage payload was capped at 12,000 characters
+  to fit the model's context. The collector emitted sections in the order host
+  warnings, container logs, backup result, disk, memory — and the first two
+  sections (bloated by the false positives in LL-0142 and by 5,000 firewall
+  lines that never deduplicated) consumed the whole budget. Every night, the
+  backup result, disk usage and memory stats were cut off before the model saw
+  them. The monitor had never once checked the things it was built to check,
+  and its OK verdicts were reporting on data it had not received.
+- **Why It Happened**: The cap was introduced as a safety measure and treated as
+  complete once it prevented context overflow. Nobody asked *which* content it
+  sacrificed, because section order had been chosen for narrative readability
+  (chronological, general to specific) rather than by importance — a criterion
+  that only becomes load-bearing once a cap exists. The truncation was flagged
+  in the output ("truncated to fit model") but as a neutral statistic rather
+  than a warning, so it read as a note about volume, not a loss of coverage.
+  Nothing failed: a monitor starved of its inputs still emits confident verdicts.
+- **Solution**: Reordered the collector so disk, memory, backup result and
+  container status are emitted *first* and can never be truncated away; reduced
+  the upstream volume (LL-0142, plus summarising 5,000 unmergeable firewall
+  lines into a five-line count); fixed the deduplicator, whose timestamp regex
+  matched only ISO dates and so never collapsed the slash-dated container logs;
+  and raised the cap to 20,000 with the model's context pinned to match. The
+  live payload now fits with the truncation flag clear. Separately, the checks
+  over those sections were moved into code (LL-0141), so their absence is now
+  itself an alert rather than a silence.
+- **Preventive Rule**: Wherever a pipeline caps, samples, paginates or
+  truncates, order the input by criticality before the cap applies, and state
+  explicitly which content is guaranteed to survive. Treat "was it truncated"
+  as a health signal, not a statistic — and prefer alerting on the *absence* of
+  an expected section over trusting a verdict computed without it. When a
+  monitor can produce a clean result from an empty or partial input, it is not
+  a monitor; assert that each critical input actually arrived.
+- **Similar Situations**: `tail -n` or `head -c` on diagnostic bundles; log
+  shippers dropping messages over a size limit; RAG pipelines whose retrieved
+  chunks are trimmed to a token budget, dropping the authoritative source;
+  `LIMIT` on a query feeding an aggregate; sampled tracing that discards the
+  slow requests; email/webhook bodies clipped by a gateway; support-ticket
+  context windows; any prompt assembled by concatenation until a budget is
+  reached, where the last section appended is the first to disappear.
