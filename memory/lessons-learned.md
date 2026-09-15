@@ -5597,3 +5597,116 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
   DNS or domain auto-renew tied to a card that expired; any cache, index, or
   search cluster that is "just a projection of the real data" and therefore
   never got a monitor of its own.
+
+### LL-0148 — A failure whose duration is always the same round number is a timeout, not slow work; read the traceback to the bottom before naming the cause
+
+- **Root Cause**: A production API on serverless functions began failing
+  intermittently: seven answer submissions lost in one afternoon, a daily
+  reminder cron reporting "N swallowed failures" three days running, one
+  scheduled invite run crashing. Every error cluster ended in the same
+  library exception carrying `code 504 … Gateway Timeout`. The instinctive
+  reading was "a slow query". It was not: the failing reads were single-row
+  lookups on a 139-row table with the correct index, `pg_stat_statements`
+  showed nothing slower than 1.5 s anywhere, the Postgres log for the hour
+  contained only millisecond checkpoints, and the database host reported
+  healthy throughout. The provider's API gateway in front of the database
+  was the component giving up — and the edge log gave it away: every failed
+  request had an origin time of 5,014–5,773 ms. Six of 171 reads in the
+  worst hour; the identical reads otherwise took ~200 ms.
+- **Why It Happened**: Two misdirections stacked.
+  1. **The top of the traceback was the wrong frame.** The gateway's 504 body
+     (`{"message": "Gateway Timeout"}`) lacked the fields the client library's
+     error model requires, so the *first visible* exception was a pydantic
+     `ValidationError` inside the library's error handler — a symptom of the
+     handler, not of the request. The real status was one frame lower.
+  2. **The library's own retry did not cover this code.** It retries GET on
+     503/520 (Cloudflare's codes) with a 1/2/4 s backoff and lets a 504 fall
+     straight through. Reading "the client has retries" as "the client
+     retries this" would have been wrong.
+  The counter email that surfaced the problem said `unfinished_session_failed:
+  4` and nothing else, so learning the cause required a trip through the
+  platform's error clusters and then the provider's edge logs.
+- **Solution**: Confirmed the diagnosis with four checks before touching
+  code (table size and index, statement statistics, database log, edge-log
+  origin times). Then supplied the client library a custom HTTP client whose
+  `send()` re-sends an idempotent request (GET/HEAD) once, after 0.3 s, on
+  502/504. Deliberately not 503 — the library already owns that, and since its
+  attempts pass through the custom client, listing it doubled every attempt
+  to eight round trips; a review caught that in the first draft. Deliberately
+  not writes: a POST that timed out at the gateway may have committed. One
+  retry, not three, because the first failure already cost 5 s inside a
+  function whose caller is waiting, and at the observed failure rate one
+  second attempt recovers nearly all of them. Tests through a mock transport,
+  plus one through the library's real execute path so the custom client's
+  URL/header plumbing is covered.
+- **Preventive Rule**: **When a failure's duration is constant to within a
+  few percent, treat it as a timer somewhere and go find the timer — do not
+  optimise the work.** Real slowness varies; a stopwatch does not. Establish
+  the layer with the cheapest independent evidence first (the request log's
+  origin time, the database's own statement stats) and only then read code.
+  **Read a traceback to its bottom frame before naming the failure**; an
+  error handler that itself throws puts its own exception on top. **Before
+  adding a retry, read exactly which methods and status codes the existing
+  layer retries** — then either exclude those or accept the multiplication
+  explicitly. Retry only idempotent operations, bound the attempts by the
+  caller's patience, not by optimism. And **a swallowed-failure counter must
+  carry the cause** (exception class or status), so the alert can say
+  "4 × 504" and skip the trip to a second system.
+- **Similar Situations**: a load balancer's idle timeout (often exactly
+  60 s) surfacing as "the API hangs"; a client-side `timeout=30` reported as
+  "the server takes 30 seconds"; a 10 s serverless function limit read as
+  an application bug; a proxy's 5 s upstream timeout blamed on a database;
+  DNS resolver timeouts that always land on 5 s; an ORM's error wrapper
+  hiding the driver's real code; HTTP client libraries with partial retry
+  matrices (only 5xx, only GET, only specific codes) that look like full
+  coverage; a cron that counts failures without recording their cause.
+
+### LL-0149 — A container cannot reach a neighbour published on 127.0.0.1 through `host.docker.internal`; join the neighbour's network and use its name
+
+- **Root Cause**: A new service was deployed as a Docker Compose stack on a
+  home server, alongside an automation tool (n8n) that runs as its own
+  Compose stack and publishes its port on the host's loopback only
+  (`127.0.0.1:5678->5678`) — the box's deliberate convention for everything.
+  The new service's compose file used `extra_hosts:
+  host.docker.internal:host-gateway` and pointed at
+  `http://host.docker.internal:5678`. That cannot work: `host-gateway`
+  resolves to the host's bridge address (e.g. `172.17.0.1`), so the
+  connection arrives on the host's `docker0` interface, and a listener (or a
+  docker-proxy DNAT rule) bound to `127.0.0.1/32` refuses it. The result
+  would have been a `ConnectError: Connection refused` from a target that was
+  demonstrably up — and it was caught in review, before deploy, by someone
+  who checked the neighbour's port binding rather than trusting the alias.
+- **Why It Happened**: `host.docker.internal` is documented as "the host",
+  and on Docker Desktop (macOS/Windows) it does reach services bound to the
+  host's loopback, because the VM boundary rewrites the path. On Linux with
+  `host-gateway` it is only the bridge IP. The same compose file had been
+  validated on a Mac. The mental model "loopback-only = safe from the LAN,
+  reachable from the machine" is right for host processes and wrong for
+  containers, which are on a different interface of the same machine.
+- **Solution**: Removed `extra_hosts`. Declared the stack's default network
+  as the neighbour's existing Compose network (`networks: default: {name:
+  n8n_default, external: true}`) and addressed the neighbour by container
+  name (`http://lnc-n8n:5678`). The new service keeps its own
+  `127.0.0.1:8126` publish for the host and the tailnet reverse proxy; the
+  cross-container path never touches a published port. Verified on the box:
+  the first sampling pass reached n8n on the first try. The same trap was
+  then checked for the *monitoring* tool that watches the new service —
+  which turned out to run in host network mode, so `127.0.0.1` was correct
+  there. The check is per neighbour, not per host.
+- **Preventive Rule**: **Before wiring one container to another on the same
+  host, run `docker ps --format '{{.Names}} {{.Ports}}'` and read the bind
+  address.** `127.0.0.1:PORT->PORT` means: join its network and use the
+  container name, or ask the operator to publish on the bridge; never
+  `host.docker.internal`. `0.0.0.0:PORT` or `network_mode: host` means the
+  host address works. **Validate cross-container reachability on the target
+  OS**, not on Docker Desktop, whose VM makes the loopback case pass. And
+  when a review says "this cannot connect", check the port binding on the
+  actual box before arguing from documentation — that took one command.
+- **Similar Situations**: a database container bound to `127.0.0.1:5432`
+  and an app container told to use the host IP; a metrics exporter that
+  can scrape everything on the host except the one service bound to
+  loopback; sidecars that "see" a service on Docker Desktop but not in CI on
+  Linux; Kubernetes `hostNetwork` assumptions carried into plain Docker;
+  reverse proxies (tailscale serve, Caddy on the host) that reach loopback
+  fine and therefore hide that containers cannot; `localhost` inside a
+  container meaning the container itself.
