@@ -5813,3 +5813,34 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
   `shell:` tasks that grep for the very pattern they contain; `killall` is
   immune (matches the process name, not the command line) but too coarse for
   snap-wrapped browsers whose process name is `chrome`.
+
+### LL-0153 — A short keyword matched by substring is a rule about letters, not about words
+
+- **Root Cause**: A keyword classifier routed text to a department when any
+  keyword in the department's list was a substring of the text. The ENT list
+  carried the bare token `ent`. Every meeting held in the *Dental* Conference
+  Room — the Executive Steering Committee, the Board of Directors — was filed
+  under ENT, and "Housing appoint**ment**" went with them. The same rule would
+  let `acl` claim an ACLS class for Orthopedics and `tha` match "that".
+- **Why It Happened**: Substring matching is the right default for long
+  clinical stems (`gynecolog` must catch "gynecological"), so it was applied
+  uniformly. Nobody re-asked the question for the short tokens, where the
+  odds of appearing inside an unrelated English word are high. The test
+  fixtures were all titles that named the service line, so the false
+  positives came only from the *location* field of real calendar events —
+  a signal the tests never fed in.
+- **Solution**: One matcher with two regimes. Keywords of four characters or
+  fewer made only of letters and digits match on word boundaries
+  (`(^|[^a-z0-9])kw([^a-z0-9]|$)`); longer keywords, and any keyword that
+  already carries a space or punctuation (`gyn `, `l&d`), keep substring
+  matching. The failing tests use the real signal shape — title, description,
+  location, calendar name — not just a title.
+- **Preventive Rule**: When a keyword list mixes long stems and short tokens,
+  the matching rule cannot be uniform: a substring test on a token of three or
+  four letters is a rule about letter sequences, not about words, and English
+  is full of them. Decide the regime per keyword length, and test the
+  classifier against every field the production caller actually passes, not
+  only the one the keywords were written for. Found by running the classifier
+  over two months of real imported events, which is the cheapest audit there
+  is for any classifier: replay the production inputs and read the output.
+
