@@ -5710,3 +5710,106 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
   reverse proxies (tailscale serve, Caddy on the host) that reach loopback
   fine and therefore hide that containers cannot; `localhost` inside a
   container meaning the container itself.
+
+### LL-0150 — A kiosk compositor started by systemd never becomes "active" under logind unless something switches the VT; add a privileged `chvt` pre-start
+
+- **Root Cause**: A Wayland kiosk (cage running Chromium) was deployed on a
+  headless Ubuntu server as a system unit with `PAMName=login` and
+  `TTYPath=/dev/tty7`, the documented way to give a service a seat. It
+  crash-looped every 10 s with only a PAM "session opened" line in the
+  journal. cage's own log (visible once its stderr was captured) said
+  `Timeout waiting session to become active` → `Failed to start a DRM
+  session`. logind marks a session active only when its VT is the foreground
+  VT. The foreground VT was tty1, where the operator was logged in at the
+  console, and nothing — no display manager — ever switched to tty7.
+- **Why It Happened**: Every kiosk recipe assumes either a display manager
+  (which switches VTs) or a box where the kiosk is the only thing that ever
+  touches the console. A server whose HDMI port has doubled as a text console
+  for weeks is neither. The unit "started" fine; the failure was inside the
+  compositor's seat negotiation, which systemd cannot see.
+- **Solution**: `ExecStartPre=+/usr/bin/chvt 7` in the unit. The `+` runs
+  that one step as root (chvt needs `CAP_SYS_TTY_CONFIG`) before the PAM
+  session is created, so tty7 is already foreground when cage asks for the
+  seat. The text console keeps living on tty1 (`Ctrl+Alt+F1`), the kiosk on
+  tty7 (`Ctrl+Alt+F7`). Also moved `ExecStart` to a user-owned wrapper script
+  so compositor flags can change without touching the root-owned unit.
+- **Preventive Rule**: **When a systemd unit runs a compositor or any
+  seat-taking program on a fixed VT, switch to that VT in a privileged
+  `ExecStartPre` and capture the program's stderr into the journal from the
+  first run; "Started" from systemd proves nothing about the seat.**
+- **Similar Situations**: X kiosks started with `startx` from a unit on a
+  box that has a getty on the same VT; Sway/Weston in `--drm-device` mode;
+  digital-signage players that work at first boot and fail after someone logs
+  in on the console once; any "Timeout waiting session to become active" or
+  "Failed to take control of session" message from wlroots/libseat/logind.
+
+### LL-0151 — Chromium's forced device-scale-factor under a Wayland kiosk breaks fullscreen geometry; scale with per-site zoom and debug with DevTools, not photographs
+
+- **Root Cause**: To make a dashboard readable on a 4K TV, Chromium was
+  started with `--force-device-scale-factor=2` (and earlier 1.25) inside
+  cage. The page rendered in the top-left quarter of the screen, the rest
+  black. Pinning `--window-size=3840,2160 --window-position=0,0` changed
+  nothing except making the icons bigger. Chromium's DevTools protocol on a
+  loopback `--remote-debugging-port` showed why: the window was already
+  `fullscreen 3840x2160`, but `screen.width` was **3840 DIP at DPR 2** — a
+  7680-pixel display that does not exist — and `Page.captureScreenshot`
+  returned a 7680x4320 image. With the forced factor removed the page filled
+  the panel at once (DPR 1, text tiny).
+- **Why It Happened**: On Wayland, Chromium derives the display's DIP size
+  from the compositor's `wl_output` (3840 logical, scale 1) and separately
+  applies the forced scale factor, so the two no longer agree and the
+  surface it commits is the wrong size for the output. The flag is a Windows/
+  X11-era knob; it does not tell the compositor anything. Diagnosing from
+  phone photos of the TV wasted three rounds; one DevTools query
+  (`Runtime.evaluate` of `screen`, `innerWidth`, `devicePixelRatio`;
+  `Browser.getWindowForTarget`) settled it in one.
+- **Solution**: No forced scale factor. Readability via Chromium's normal
+  per-site zoom, written by the launcher into the profile's `Preferences`
+  (`partition.per_host_zoom_levels.x["<host>"] = ln(zoom)/ln(1.2)`) before
+  every start so it survives reboots and is one env var to change. Verified
+  by DevTools: `innerWidth` 2194 CSS px at DPR 1.75 on a 3840-px fullscreen
+  window. Kept `--remote-debugging-port=9222` (loopback only) permanently and
+  saved a stdlib-only ~40-line Python websocket client next to the kiosk so
+  the next person can ask the browser instead of the operator.
+- **Preventive Rule**: **On a Wayland kiosk, never use
+  `--force-device-scale-factor`; use output scale in the compositor or
+  per-site zoom in the browser. And when a screen you cannot see looks wrong,
+  the first move is a loopback DevTools port and a metrics query, not another
+  photo.** The `SystemInfo.getInfo` domain answers only on the browser
+  target (`/json/version`), not on a page target.
+- **Similar Situations**: Electron kiosks with `--force-device-scale-factor`
+  on wlroots compositors; Firefox with `GDK_SCALE`/`GDK_DPI_SCALE` under a
+  scale-1 output; any "page in a corner / page cropped / page blurry" report
+  from a signage screen where the fix is being guessed from a description of
+  the screen; HiDPI laptops where `xrandr --scale` and the toolkit's own scale
+  are both set.
+
+### LL-0152 — `pkill -f` with a pattern that matches its own command line kills the shell that ran it; bracket the first character
+
+- **Root Cause**: To restart a kiosk browser without sudo (the compositor
+  exits with its child and systemd restarts the unit), the operator ran
+  `ssh host 'pkill -u user -f "/snap/chromium/.*--kiosk"; sleep 25; ...'`.
+  The ssh session died with exit 255 and none of the follow-up ran. The
+  remote shell's own command line contained the literal text
+  `/snap/chromium/.*--kiosk`, so `pkill -f` matched and killed the shell
+  running the script (and thereby the ssh session) along with the browser.
+- **Why It Happened**: `pkill -f` matches the full command line of every
+  process, including the `bash -c '...'` that ssh spawned to run the
+  command, whose argument is the pattern itself. Interactive use rarely
+  trips this because a typed `pkill` is its own short-lived process; a
+  quoted multi-command string passed through ssh is where it bites.
+- **Solution**: `pkill -u user -f "[c]hromium.*--kiosk"`. The bracketed
+  first character is a regex that matches `chromium` in a real command line
+  but not the literal string `[c]hromium` in the pkill/shell command line.
+  Same trick as `ps | grep "[c]hromium"`. Verified: the browser restarted,
+  the ssh session stayed up, the follow-up checks ran.
+- **Preventive Rule**: **Any `pkill -f` / `pgrep -f` inside a script or an
+  ssh command string must use a pattern that cannot match itself —
+  bracket the first character — and should be scoped with `-u user`.** An
+  ssh session that dies with 255 right at a `pkill` is this, not a network
+  problem.
+- **Similar Situations**: `pkill -f "python.*worker"` in a deploy script that
+  is itself run by Python; `kill $(pgrep -f name)` inside cron jobs; Ansible
+  `shell:` tasks that grep for the very pattern they contain; `killall` is
+  immune (matches the process name, not the command line) but too coarse for
+  snap-wrapped browsers whose process name is `chrome`.
