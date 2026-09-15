@@ -5400,7 +5400,7 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
   context windows; any prompt assembled by concatenation until a budget is
   reached, where the last section appended is the first to disappear.
 
-### LL-0141 — Never mutate a file while an interactive command is mid-flight on it; and never share a temp filename
+### LL-0144 — Never mutate a file while an interactive command is mid-flight on it; and never share a temp filename
 
 - **Root Cause**: A user's `.env` was reduced from 15 keys to 1. Two edits ran
   concurrently against the same file using the same temp path. The user's
@@ -5433,7 +5433,7 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
   `cmd file > file.tmp && mv` pattern run more than once concurrently; database
   migrations run twice against one schema.
 
-### LL-0142 — A 403 from an edge proxy and a 403 from an API mean different things; read the body before inferring a permission model
+### LL-0145 — A 403 from an edge proxy and a 403 from an API mean different things; read the body before inferring a permission model
 
 - **Root Cause**: `GET https://api.resend.com/emails` returned HTTP 403 with the
   body `error code: 1010`. This was read as "the API key lacks read scope", and
@@ -5461,3 +5461,72 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
   from IAM; 401 from an ingress vs from the app; HTML error pages returned to a
   JSON client; corporate proxies returning 407 mid-pipeline; `curl` succeeding
   where a library fails purely on User-Agent or TLS fingerprint.
+
+### LL-0146 — A notifier that runs on a different machine than the detector is not a notifier; and a dead-man downstream of what it watches is decoration
+
+- **Root Cause**: A weekly infrastructure check ran correctly on the home
+  server every Monday, found real pending upgrades, and called its `notify()`
+  — which was a deliberate no-op on any host without `osascript`. User-facing
+  notification had been delegated to a **Mac** LaunchAgent that fetched the
+  report and posted a macOS banner, scheduled Mondays 03:30 local with
+  `RunAtLoad=false`. Its log held exactly two entries, both hand-tests on the
+  day it was built; `launchctl print` reported `runs = 0`. It never fired on
+  schedule once. Three weeks of findings — including security updates — were
+  detected, written to disk, and never reached a human. The operator only
+  learned of them by asking.
+- **Why It Happened**: Three independent faults, each sufficient alone, and a
+  README that argued the first one away.
+  1. **The schedule assumed the wrong power state.** The README asserted "if
+     the Mac is asleep at 03:30, launchd runs the missed job on wake, which is
+     exactly when a notification is useful." launchd replays a missed
+     `StartCalendarInterval` on wake from *sleep*; it does **not** queue events
+     for a machine that is **powered off**, and with `RunAtLoad=false` a later
+     boot fires nothing. A laptop that travels is off, not asleep. That
+     sentence was load-bearing and wrong, and it had been written confidently
+     enough that nobody re-checked it.
+  2. **The delivery channel was local to the wrong machine.** Even on a perfect
+     run it produced a desktop banner — reaching the operator only while he sat
+     at that desk, never his phone. He was abroad.
+  3. **The dead-man lived inside the thing that died.** The 96h staleness check
+     meant to catch "the server cron stopped running" lived in the same script
+     that never ran. A dead-man that is itself dead reports nothing, and its
+     silence is **indistinguishable from health** — so it does not merely fail,
+     it manufactures confidence.
+  Compounding all three: both notification paths had been exercised by hand on
+  build day, and the README recorded that as "both notification states are now
+  exercised." True, and worthless. What was never tested was whether anything
+  would ever *call* the handler.
+- **Solution**: Moved notification into the host that performs the detection —
+  the server now pushes to ntfy itself, bounded and retried, tracking whether
+  any channel actually delivered rather than assuming. Retired the Mac agent
+  entirely (the machine now has no operational role). Rehosted the staleness
+  dead-man inside the **nightly backup job**, which is itself watched by a
+  push-monitor whose alarm reaches the phone — giving a chain where each layer
+  is watched by the one beneath it: weekly check → nightly backup → push
+  monitor → external 10-minute ping. Added a test asserting the **trigger**
+  (that the backup script actually invokes the staleness script, as a real
+  invocation and not a comment), mutation-tested by deleting and by commenting
+  out the call. Kept the wrong README passages verbatim under dated
+  "Superseded" callouts rather than quietly rewriting them: the incorrect
+  reasoning is the part worth preserving.
+- **Preventive Rule**: **Notification must originate on the machine that
+  detects the condition.** If detection and delivery live on different hosts,
+  the alert is only as reliable as the least-available one, and its failure
+  mode is silence. **A dead-man's switch must never live downstream of the
+  thing it watches** — host it in a job that is itself independently monitored,
+  and be able to name what watches the watcher. **Test the trigger, not just
+  the handler**: a green test over notification *logic* proves nothing about
+  whether the scheduler ever invokes it; assert the wiring, and mutation-test
+  that assertion by removing the call. And treat **silence from a monitor as
+  unproven, never as good news** — every alerting path needs a positive
+  heartbeat or a periodic proof-of-life, because "no alert" and "alerting is
+  broken" look identical from the outside.
+- **Similar Situations**: cron on one box mailing through an MTA on another;
+  CI notifications routed via a webhook nobody re-tests after a URL change;
+  Kubernetes liveness probes whose alert path runs inside the failing cluster;
+  a backup that reports success because the verification step is part of the
+  backup script; log-based alerting where the shipper dies and the dashboard
+  goes quiet and green; `RunAtLoad=false` LaunchAgents and `Persistent=false`
+  systemd timers on laptops; on-call rotations where the paging integration is
+  only ever tested during onboarding; any "we tested it by hand when we built
+  it" component that has produced no output since.
