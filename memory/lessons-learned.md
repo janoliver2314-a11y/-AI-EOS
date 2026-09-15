@@ -5530,3 +5530,70 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
   systemd timers on laptops; on-call rotations where the paging integration is
   only ever tested during onboarding; any "we tested it by hand when we built
   it" component that has produced no output since.
+
+### LL-0147 — A managed resource with one gracefully-degrading consumer fails silently; give it a heartbeat that does not depend on the consumer
+
+- **Root Cause**: The production RAG index for an AI tutor lived on a
+  vendor's **free-tier** vector cluster, which the vendor suspends after ~two
+  weeks without API traffic and deletes three weeks after that. The tutor was
+  the cluster's **only** caller. Learners kept using the platform daily —
+  practice sessions, grading, flashcards — but none of that touches the vector
+  store, so from the vendor's side the cluster looked abandoned. The last tutor
+  message was Aug 17, the last re-index write Aug 26, the suspension notice
+  went to a secondary inbox on Sep 6, and the cluster was suspended around
+  Sep 8 while the operator was travelling. Nothing in the application errored.
+- **Why It Happened**: Three properties combined, each individually
+  reasonable.
+  1. **Activity was inferred from the wrong signal.** "The platform is live
+     with real users" was read as "its dependencies are in use." Liveness of a
+     dependency is a property of *that dependency's* traffic, not of the
+     product's. A single-consumer dependency inherits the consumer's idle
+     periods completely.
+  2. **The consumer degraded gracefully on purpose.** The retrieval path
+     treats a connection failure as transient — log it, answer without
+     reviewed context — and every ingestion call on publish/edit is
+     log-and-swallow so an index hiccup cannot block editorial work. Both are
+     correct decisions. Their combined effect is that the resource can vanish
+     entirely and the only evidence is a stack trace in server logs nobody
+     tails and answers that are subtly less grounded. The failure was designed
+     to be quiet; nobody designed the counterpart that would make it loud.
+  3. **The vendor's warning went to a channel with no SLA.** The notice was an
+     email to a personal account, read nine days after suspension. A vendor's
+     lifecycle email is a courtesy, not a monitor.
+  Compounding: the index is fully derivable from the primary database via a
+  backfill script, which made the risk feel bounded — but permanent deletion
+  also drops payload indexes and would have forced a rebuild under a rate-
+  limited embedding API, at a time of the vendor's choosing.
+- **Solution**: Reactivated the cluster (data intact). Built a daily
+  keep-alive on the always-on home server as an n8n workflow: one
+  authenticated `GET /collections`, which is exactly the traffic the vendor's
+  inactivity timer counts. Silent on success. An HTTP failure — suspended,
+  bad key, DNS — throws into the existing error-reporter workflow and reaches
+  the phone; a 200 that lacks the expected collection raises its own
+  high-priority push naming the rebuild script. Chose **daily over weekly**
+  because the observed suspension came 13 days after the last write: a
+  weekly slot that misses once is already inside the window. The API key was
+  created as an n8n credential by the operator directly from the project's
+  `.env`, so it never transited the assistant's context.
+- **Preventive Rule**: **Every managed resource with a lifecycle rule
+  (inactivity suspension, idle pause, trial expiry, auto-archive) gets its
+  own heartbeat, hosted independently of the workload that consumes it.** The
+  heartbeat must produce the *kind* of traffic the vendor's timer counts, run
+  from a host whose uptime is already monitored, and fire on a cadence with
+  at least a 2× margin under the vendor's threshold. **Wherever a consumer
+  is deliberately fail-open, pair it with something that is fail-loud** —
+  graceful degradation without an independent probe converts an outage into
+  a slow quality regression that no dashboard shows. **Inventory
+  single-consumer dependencies explicitly**: when a feature goes quiet, list
+  which resources go quiet with it. And **route vendor lifecycle emails to the
+  alerting channel**, or treat them as if they will not be read — because they
+  will not.
+- **Similar Situations**: free-tier databases that pause on inactivity
+  (Supabase, Neon, PlanetScale, Render); serverless functions and containers
+  that scale to zero and lose warm state or scheduled jobs; OAuth refresh
+  tokens that expire when the app is not used; API keys that lapse after N
+  days idle; TLS certificates whose auto-renewal only runs when the service
+  is hit; trial and promotional credits with use-it-or-lose-it windows;
+  DNS or domain auto-renew tied to a card that expired; any cache, index, or
+  search cluster that is "just a projection of the real data" and therefore
+  never got a monitor of its own.
