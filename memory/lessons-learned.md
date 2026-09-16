@@ -5844,3 +5844,34 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
   over two months of real imported events, which is the cheapest audit there
   is for any classifier: replay the production inputs and read the output.
 
+### LL-0154 — A timestamp's offset belongs to the source calendar, not to the user; slicing a clock out of the string bakes in whichever one you happened to test
+
+- **Root Cause**: A calendar importer took "HH:MM" by slicing Google's
+  RFC3339 `dateTime` string, deliberately avoiding `Date()` because the
+  serverless runtime is UTC and a naive conversion would shift a Rome
+  meeting. That was correct for the user's primary calendar, which Google
+  returns in the calendar's own zone (Europe/Rome). But the iCloud calendars
+  the user had subscribed into Google report their zone to Google as **UTC**,
+  so the same meeting arrived as `05:45:00Z` and was filed at 0545. Every
+  imported occurrence of three weekly leadership meetings was two hours
+  early for as long as the import existed.
+- **Why It Happened**: The one test fixture used a `+02:00` timestamp, so
+  the slice looked right. Nobody asked which zone Google would *choose* for
+  each calendar, and the calendar list — which shows `timeZone: "UTC"` for
+  every subscription — was never read. The rule "don't go through Date()"
+  was remembered; the reason for it (the server's zone) was mistaken for
+  "offsets never matter". It surfaced only when the user's own hand-typed
+  tasks for the same meetings appeared beside the imports in one email.
+- **Solution**: Convert the instant explicitly in the business zone with
+  `Intl.DateTimeFormat({ timeZone })`, derive the date from the same
+  conversion (a late-UTC start belongs to the next local morning), and test
+  with `Z`, `+02:00`, a foreign offset, and a winter date. Then repair the
+  stored rows with a guard that only touches rows still carrying the raw
+  UTC clock from their own source id, so a hand-edited row is left alone.
+- **Preventive Rule**: When reading a wall-clock time from any external
+  timestamp, name the zone you are converting *to* explicitly in code and
+  never assume the zone it comes *in*: a feed can carry a different offset
+  per record (here, per calendar). "Don't use Date()" is a rule about the
+  runtime's zone, not a licence to slice. Test every offset shape the
+  source can send, including UTC, and look at the source's own metadata
+  (the calendar list's `timeZone`) before trusting one sample.
