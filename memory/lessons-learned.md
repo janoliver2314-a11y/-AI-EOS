@@ -5875,3 +5875,57 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
   runtime's zone, not a licence to slice. Test every offset shape the
   source can send, including UTC, and look at the source's own metadata
   (the calendar list's `timeZone`) before trusting one sample.
+
+### LL-0155 — A framework's validation error is a data structure, not a sentence; student-facing rules belong where they can return a plain string
+
+- **Root Cause**: A FastAPI endpoint put its cross-field rules ("an
+  outcome needs a date that is today or past") in a pydantic
+  `model_validator`, with carefully worded messages. Pydantic errors leave
+  FastAPI as a 422 whose `detail` is a **list** of error objects. The
+  frontend's error helper only accepts a string `detail` and otherwise
+  falls back to the status text, so every one of those messages would have
+  reached the student as "Unprocessable Entity". The messages were tested
+  server-side and never once rendered.
+- **Why It Happened**: Pydantic is the obvious home for validation, and
+  `ValueError` messages *look* like they will surface. Nobody traced one
+  message from the validator through the HTTP layer to the component that
+  shows it. A code review that read the frontend helper and the backend
+  model side by side caught it before merge; the unit tests, which
+  asserted only status codes, could not.
+- **Solution**: Keep the pydantic model as shape only. Move the rules into
+  the service as a function that raises `ValueError` with the sentence the
+  student should read, and have the route convert that to a 400 with a
+  string `detail`, which is the pattern the repo's other routes already
+  used. Tests assert the exact sentence in `detail`, not just the status.
+- **Preventive Rule**: For any message a person is meant to read, write the
+  test that asserts the rendered text at the boundary where it is shown,
+  and trace it once through every layer. A framework's built-in validation
+  response is for API clients, not people; if a human will see it, own
+  the status code and the string yourself. When two layers of one codebase
+  disagree about a shape (list vs string), review them side by side.
+
+### LL-0156 — A migration tool's first line of output is not proof it applied anything; verify the schema with a query
+
+- **Root Cause**: `supabase migration up` was run to add a value to a
+  check constraint on the local database. Its output was captured through
+  `head -1`, which showed "Connecting to local database..." and nothing
+  else, and work continued as if the migration had applied. The very next
+  test inserted the new value and failed on the old constraint. A second
+  run of the same command applied it normally.
+- **Why It Happened**: Truncating the output to keep the transcript short
+  discarded the only line that says what happened. Earlier in the session
+  the same command had worked on the first try, so its success was assumed
+  rather than read. The failure was cheap here because a test hit the
+  constraint immediately; against a cloud database the same assumption
+  would have deployed code whose inserts fail on every request.
+- **Solution**: Re-run and read the full output, which lists each applied
+  file. Better: after any migration, prove the schema change with a query
+  (insert the new value in a test, or `select` the constraint definition)
+  before building on it. Never pipe a state-changing command through
+  `head`.
+- **Preventive Rule**: Treat every migration or deploy command as
+  unverified until a read of the target confirms the change. Show the
+  command's full output, not its first line, and follow it with a check
+  that would fail if nothing had happened. This is the same rule as
+  "constant duration is a timeout" (LL-0148): the tool's chatter is not
+  the evidence; the state is.
