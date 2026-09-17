@@ -496,9 +496,14 @@ until it has already happened several times. Treat it as provisional until a
 second use confirms the shape.
 
 **Used in**: Task Command's `dismissedSources` — the sourceIds of deleted
-calendar imports, held in the sync reducer beside the tombstone queue and
-deliberately never drained, so a meeting deleted on one device is not
-re-imported on the next calendar sync.
+calendar imports, held in the sync reducer beside the tombstone queue, so a
+meeting deleted on one device is not re-imported on the next calendar sync.
+First recorded as "never drained"; on second look (2026-09-17, `LL-0159`)
+it gained a drain set by what it suppresses: the calendar scan only looks
+fourteen days ahead, so a dismissed occurrence whose own day is ninety days
+behind can never be re-imported and is let go, while an id with no date in it
+is kept. The lifetime is still the suppressed thing's, not the queue's — the
+pattern held; only "never" became a number.
 
 **Shape**: when an operation both *delivers* something and *suppresses*
 something, two records are in play and they do not expire together. The
@@ -511,7 +516,9 @@ and write down at the definition which is which.
 
 **Canonical example**: `src/state/reducer.js` — `deletes` drains on `FLUSH_OK`
 once the server confirms the tombstone; `dismissedSources`, populated in the
-same `REMOVE` action, has no drain path at all. A test asserts exactly that
+same `REMOVE` action, is never cleared on that signal. It drains only on a
+pull, through `drainDismissed` in `src/lib/calendar.js`, by the suppressed
+occurrence's own date against the importer's horizon. A test asserts the
 pairing, because the natural instinct is to clear both on the same signal.
 
 **When to use**: any delete that a creator can undo — importers and ingestion

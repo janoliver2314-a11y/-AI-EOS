@@ -5929,3 +5929,93 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
   that would fail if nothing had happened. This is the same rule as
   "constant duration is a timeout" (LL-0148): the tool's chatter is not
   the evidence; the state is.
+
+### LL-0157 — A test entry point chained with `&&` reports only the first failing suite; the runner must run everything and name every failure
+
+- **Root Cause**: `npm test` was `node test/a.mjs && node test/b.mjs && …`
+  across twenty-nine suites. Each suite exits non-zero on failure, so the
+  chain stopped at the first one and every later suite was never run. A fix
+  in one area could turn the command green while a suite further down the
+  chain was still broken, and the only way to know was to run suites by
+  hand.
+- **Why It Happened**: The chain was the shortest thing that worked when
+  there were three suites, and each new suite was appended to it. The
+  failure mode is invisible on a green run, which is the normal run, so the
+  trap was known (it was written into session memory as a standing
+  warning) but never removed.
+- **Solution**: A runner (`test/run.mjs`) that discovers every `*.mjs` in
+  the test directory, runs each as a child process, prints all of their
+  output, and exits non-zero naming the suites that failed. New suites are
+  picked up by existing, so none can be left off a list. The failure path
+  was proven by adding a throwaway failing suite and checking the exit code
+  and the summary line, then removing it.
+- **Preventive Rule**: The test entry point must run every suite regardless
+  of earlier results and report all failures at once. Never join suites
+  with `&&`. When writing a runner, test its failure path explicitly — a
+  runner that is only ever seen green has not been tested. If a trap is
+  important enough to write into memory as a warning, it is important
+  enough to fix.
+- **Similar Situations**: CI jobs whose steps stop at the first non-zero
+  exit; shell scripts with `set -e` wrapping independent checks; lint,
+  typecheck and test joined in one chain. Same rule: independent checks
+  should be collected, not short-circuited.
+
+### LL-0158 — A migration's code outlives the migration unless its removal is scheduled when the source is dropped
+
+- **Root Cause**: A one-time split of a legacy blob table into per-item rows
+  ran on 2026-07-28 and the blob table was dropped the next day. Seven
+  weeks later the server still probed for that table on every first sync
+  with an empty cache (guarded by a "relation missing" check), the client
+  still converted a legacy local-storage cache and reconciled twin rows by
+  legacy id, a `migrated` field still travelled in the sync payload, and
+  ten tests still exercised all of it. None of it could ever run again.
+- **Why It Happened**: When the table was dropped, the code was made
+  *tolerant* of its absence rather than removed — a guard was the smaller
+  diff that day. A guard for "the thing I migrate from no longer exists" is
+  the exact signal that the path is dead, but it reads as robustness.
+- **Solution**: Remove the server migration, the client conversion, the
+  twin reconciliation and the payload field together, delete their tests,
+  and replace the rationale comments that leaned on the migration (the
+  tombstone list's "why explicit" note cited a legacy case) with the
+  reasons that still hold. Also clear the legacy storage keys on load so
+  devices stop carrying them.
+- **Preventive Rule**: When a migration's source is dropped, remove the
+  migration code in the same change or open the removal as a dated task.
+  Treat an "is the source missing?" guard as a smell: if the source can be
+  missing, the migration is over. Before retiring, grep for every name the
+  path introduced (fields, storage keys, response fields, notices) — they
+  spread further than the function.
+- **Similar Situations**: Feature-flag branches after the flag is 100%;
+  backfill scripts after the backfill; compatibility shims for a client
+  version that no longer exists; "v1" API handlers kept behind a redirect.
+
+### LL-0159 — Every append-only store needs its retention rule written when it is created, on the write path that grows it
+
+- **Root Cause**: Three collections in one app grew without bound: a table
+  of sent-alert keys (read with a two-day window, never deleted), a list of
+  deletion tombstones (kept forever so an offline device could never miss a
+  deletion), and a client-side set of dismissed calendar sources (added to
+  on every delete, never drained). None was large yet; all three were on a
+  path to be.
+- **Why It Happened**: Each was created to solve a correctness problem
+  (dedupe, propagation, suppression) and the question "when does an entry
+  stop mattering?" was not asked at creation. For the tombstones a
+  reason was even written down — an offline device — without quantifying
+  it against how the devices actually sync (daily).
+- **Solution**: A bound derived from what each record protects: alert keys
+  are read two days back, so keep seven; a deletion must reach a device
+  before it syncs again, both sync daily, so keep ninety; a dismissal only
+  stops a re-import and the scan looks fourteen days ahead, so a dismissed
+  occurrence ninety days past its own day can never return — drop it, keep
+  anything without a date in its id. Each sweep runs on the write path that
+  grows the store, scoped to the owner, so a quiet run does no extra work.
+- **Preventive Rule**: When creating any append-only table, log, queue or
+  set, write its retention rule in the same change, derived from the thing
+  it protects (a read window, a sync cadence, a lookahead horizon) rather
+  than from a round number, and prune on the write that grows it. If the
+  honest answer is "forever", write the reason down with a number in it so
+  it can be re-checked.
+- **Similar Situations**: Idempotency-key tables, webhook event logs, audit
+  trails without an archive step, "seen ids" sets in scrapers, dead-letter
+  queues, soft-delete rows in any table.
+
