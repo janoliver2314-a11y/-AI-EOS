@@ -6019,3 +6019,33 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
   trails without an archive step, "seen ids" sets in scrapers, dead-letter
   queues, soft-delete rows in any table.
 
+
+### LL-0160 — A watchdog restarted by the job it watches never fires; a dead-man must live outside the blast radius of what it guards
+
+- **Root Cause**: Uptime Kuma delays a push monitor's *first* staleness check by one
+  full interval after every process start (25h here), on the assumption that the
+  process runs continuously. The nightly backup script stopped and restarted Kuma to
+  copy its SQLite at rest, so the 25h countdown was reset every 24h and never expired.
+  restic then failed six nights running (a new stack's root-owned data directory) with
+  the "no backup in 25h" alarm structurally unable to fire.
+- **Why It Happened**: The dead-man was designed and *live-fire tested* on the day it
+  was built — but the test pinged and waited for the alarm on a Kuma that had not been
+  restarted in between. Two individually sensible decisions (stop the DB owner for a
+  consistent copy; watch the backup with a push monitor) were never checked against
+  each other, and "green" was read as "healthy" for five weeks when it meant "never
+  evaluated". The failure was caught only by an unrelated nightly log triage that
+  greps the backup log for an OK line.
+- **Solution**: Take the watcher out of the watched job: the backup no longer stops
+  Kuma and instead snapshots its database online via SQLite's backup API (read-only
+  open, transactionally consistent, integrity-checked). Documented that any Kuma
+  restart buys one interval of blindness by design.
+- **Preventive Rule**: A watchdog must not be restarted, paused, or otherwise
+  disturbed by the process it watches — and "the alarm fired in a drill" only counts
+  if the drill included every routine event that touches the watcher (nightly restarts,
+  backups, deploys). When a job stops a service to copy its state, check whether that
+  service is also monitoring the job. Prefer the online/consistent-copy API of a
+  database over stopping its owner whenever the owner has any monitoring role.
+- **Similar Situations**: healthchecks-style pings evaluated by a service that the
+  deploy pipeline restarts; a log shipper restarted by logrotate right before the
+  error it should have shipped; cron-driven backups that bounce Prometheus; any "silence
+  means trouble" monitor whose evaluator has a warm-up delay after start.
