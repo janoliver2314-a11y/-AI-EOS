@@ -6049,3 +6049,28 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
   deploy pipeline restarts; a log shipper restarted by logrotate right before the
   error it should have shipped; cron-driven backups that bounce Prometheus; any "silence
   means trouble" monitor whose evaluator has a warm-up delay after start.
+
+### LL-0161 — Under `set -u`, a function with an optional argument must read `${1:-}`; and a new alert path is untested until its success path has run end to end
+
+- **Root Cause**: A healthchecks.io ping helper added to a `set -euo pipefail` backup
+  script was written `hc_ping() { ... "$url$1" ... }` and documented as taking `""`
+  for success. The success call was a bare `hc_ping` with no argument, so `$1` was
+  unset and bash aborted the script — after the snapshot was saved, before the success
+  ping and the final `OK` log line.
+- **Why It Happened**: Only the `/start` and `/fail` variants (which pass an argument)
+  were exercised when the dead-man was armed. The crash happened on the last line of a
+  cron job whose stderr went to a log nobody read, and the backup itself kept
+  succeeding, so it looked like two flaky monitors rather than one bug. Symptoms for
+  three days: healthchecks.io DOWN every night (got `/start`, never success — a manual
+  ping "fixed" it), and the log-triage monitor reporting "backup NO OK LINE".
+- **Solution**: `local suffix="${1:-}"` and use `$suffix` everywhere in the function.
+- **Preventive Rule**: In any `set -u` script, every optional positional parameter is
+  read as `${N:-}` — including in comparisons like `[ "$1" = ... ]`. When adding an
+  alert or heartbeat to an existing job, run the job's *success* path end to end once
+  and confirm the receiving side saw the success signal; a dead-man armed on `/start`
+  alone will page on the first healthy night. When two monitors disagree with the
+  job's own status file, read the job's raw stderr log first.
+- **Similar Situations**: optional flags parsed with `$2` in `set -u` scripts; cron
+  jobs whose final notification step is the only untested line; any "it recovers when
+  I poke it manually" alert — the manual poke is usually doing the step the automation
+  crashed before reaching.
