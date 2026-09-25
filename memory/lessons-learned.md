@@ -6074,3 +6074,30 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
   jobs whose final notification step is the only untested line; any "it recovers when
   I poke it manually" alert — the manual poke is usually doing the step the automation
   crashed before reaching.
+
+### LL-0162 — A plan that dictates complete code can dictate a bug; per-task reviewers approve it because "it matches the brief," so only a whole-branch review against the spec catches it
+
+- **Root Cause**: The expense-tracker Plan 1 (2026-09-25) spelled out every function
+  and test verbatim so cheap implementers could transcribe them. Two of those blocks
+  were wrong against the spec: card-payment pairing only matched rows already labelled
+  `transfer` (so the checking-side payment still double-counted as spending), and the
+  spec's `payments_only` card rule had no code at all. All per-task reviews passed —
+  each compared the diff to its brief, and the diff matched the brief perfectly.
+- **Why It Happened**: A task-scoped review's authority is the brief. When the brief
+  is the defect, "spec compliant" means "faithfully reproduced the defect." The plan
+  author (me) wrote tests that only covered the happy path the code was designed for,
+  so TDD was green by construction.
+- **Solution**: The final whole-branch review was dispatched with the *spec* as the
+  binding authority and told to probe real-world inputs (an `expense` on the other
+  side of a payment, `$(42.10)`, `0.00` in an unused debit column). It found 1
+  Critical + 5 Important, all fixed in one wave and re-reviewed.
+- **Preventive Rule**: Never skip the whole-branch review because every task review
+  was clean — task reviews measure fidelity to the plan, not correctness. Give the
+  final reviewer the spec, not the plan, as its authority, and ask it to probe inputs
+  the plan's tests never mention. When writing a plan with full code, write at least
+  one test per rule from the *spec's* perspective (adversarial input) rather than
+  from the code's.
+- **Similar Situations**: any generated-code pipeline where the same author writes
+  code and its tests; codemods reviewed against the codemod spec instead of the
+  program's behaviour; "matches the ticket" approvals when the ticket misdescribed
+  the requirement.
