@@ -605,3 +605,27 @@ Mac-side projects → `localhost:11434` via the elitedesk SSH-tunnel LaunchAgent
 where "pretty good, instant, free, private" beats "brilliant but metered" —
 and as the default home for anything touching legally or medically adjacent
 text that should not transit a third-party API.
+
+## Pattern: A Node process as container PID 1 ignores SIGTERM — give it an init
+
+**Used in**: expense tracker on the EliteDesk (`deploy/docker-compose.yml`,
+2026-09-26), found by the plan-4a whole-branch review.
+
+**Shape**: `CMD ["node", "dist/server/main.js"]` makes node PID 1 inside the
+container. The kernel drops default-disposition signals sent to PID 1, and
+node installs no SIGTERM handler by default, so every `docker stop`,
+`docker compose up -d --build` recreate, and host shutdown waits the full
+stop timeout (10 s) and then SIGKILLs the process. SQLite in WAL mode
+survives the kill, but any in-flight request is cut off mid-transaction and
+every deploy is ten seconds slower than it needs to be. The fix is one
+compose line, `init: true` (Docker's bundled tini becomes PID 1 and forwards
+SIGTERM to node), or `--init` on `docker run`; a `process.on('SIGTERM', …)`
+handler in the app is the alternative when the compose file is not yours to
+edit. Verify with `time docker compose stop <service>`: well under a second
+with an init, ten seconds without.
+
+**When to use**: any container whose entrypoint is `node` (or another
+runtime without its own signal handling — python, ruby, a shell script)
+directly. Check for it in review whenever a Dockerfile ends in
+`CMD ["node", …]` and the compose file has no `init:` — a missing handler
+never fails a build or a test, so the review is the only place it is caught.
