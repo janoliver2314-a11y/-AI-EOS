@@ -6101,3 +6101,29 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
   code and its tests; codemods reviewed against the codemod spec instead of the
   program's behaviour; "matches the ticket" approvals when the ticket misdescribed
   the requirement.
+
+---
+
+### LL-0163 — Validate a user-supplied column mapping against the file header before parsing rows
+
+- **Root Cause**: The expense-tracker CSV importer (2026-09-26) let the user name the
+  date/amount columns, then read `row[mapping.dateColumn]` for every line. When the
+  saved name (`Date`, the form's default) did not exist in a Chase export (`Transaction
+  Date`), the lookup returned `undefined` and every one of 108 lines was reported as
+  `Unreadable date ""`. The user read this as "my file's dates are broken" and the
+  actual mistake (one wrong column name in a one-time setup form) was invisible.
+- **Why It Happened**: The per-row parser was written and tested against fixtures whose
+  headers always matched the mapping, so "column missing" never appeared as a case. A
+  missing key and an unparseable value fell through the same `?? ''` path and produced
+  the same message.
+- **Solution**: Before iterating rows, compare every mapped column name to
+  `parsed.meta.fields`. If one is absent, return a single error on line 1 that names the
+  missing column and lists the columns the file actually has, and parse nothing.
+- **Preventive Rule**: Whenever code maps user-entered names onto a schema discovered at
+  runtime (CSV headers, JSON keys, spreadsheet columns, env vars), validate the names as a
+  set against the discovered schema first and fail once at that layer. A per-record
+  error path must not be the only place a structural mistake can surface. Write one test
+  with a header that does not match the mapping.
+- **Similar Situations**: import wizards with a "which column is X" step; config files
+  that reference fields by name; any error message that comes out identical N times —
+  that repetition is itself the signal that the failure is structural, not per-record.
