@@ -629,3 +629,24 @@ runtime without its own signal handling — python, ruby, a shell script)
 directly. Check for it in review whenever a Dockerfile ends in
 `CMD ["node", …]` and the compose file has no `init:` — a missing handler
 never fails a build or a test, so the review is the only place it is caught.
+
+## Pattern: One-tap phone actions via ntfy HTTP buttons into a token-guarded webhook
+
+**Used in**: LNC reply triage (2026-09-27). An inbound attorney reply is
+classified by a local LLM, then pushed to Jan's phone with "Send CV package"
+and "Not interested" buttons that call an n8n webhook on the tailnet.
+
+**Shape**: The push carries an `Actions` header as a JSON array, e.g.
+`[{"action":"http","label":"Send CV package","url":"https://host/webhook/x?t=TOKEN&a=send&r=ROW&m=MSG","method":"POST","clear":true}]`.
+Send `[]` when there are no buttons; ntfy accepts it. The comma-separated short
+format is fragile once URLs carry query strings, and JSON keeps them intact.
+The webhook validates a shared token plus strict shapes for every parameter,
+then re-reads live state before acting. It refuses if the item is closed, the
+human already responded, or the action already ran (checked against its own log
+table), and answers every tap, including refusals, with a confirmation push.
+
+**When to use**: any automation where a human must approve a consequential
+action (send, charge, publish) but a laptop session is too slow. Keep the
+action body fixed and pre-approved, so the tap approves a known message rather
+than generated text. Buttons work only where the phone can reach the host, such
+as a tailnet, so say that in the push fallback text.

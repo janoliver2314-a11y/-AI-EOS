@@ -6153,3 +6153,39 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
 - **Similar Situations**: spreadsheet-as-database appends; "next available id" scans
   over sparse id columns; any upsert that decides create-vs-update by looking at a
   nullable field; ETL jobs that treat a null in a non-key column as end-of-data.
+
+### LL-0165 — A stored external id dies when the user cleans up in the source app; declutter must archive, not delete
+
+- **Root Cause**: The LNC tracker stores each firm's Gmail ThreadId (column O) so
+  follow-ups and replies go out in-thread. On 2026-09-27 two warm-lead nudges failed
+  with Gmail 404s: Jan had deleted those threads to keep an inbox shared with other
+  projects readable. The ids were still in the tracker, pointing at nothing.
+- **Why It Happened**: The design treated the ThreadId as permanent once written.
+  Nothing told the user that inbox cleanup was destructive to the automation, and the
+  send path had no fallback when the thread was gone.
+- **Solution**: Replied on the original messages still in Sent, which created fresh
+  threads, then backfilled the new ThreadIds. Moved the outreach mail under labels and
+  told Jan to archive, never delete, once a thread is tracked.
+- **Preventive Rule**: When a system stores an id owned by another app (thread, file,
+  calendar event, message), write down which user actions in that app invalidate it
+  and tell the user at setup. The send path must handle "id not found" with a clear
+  failure message and a documented recovery, not a silent retry.
+- **Similar Situations**: Drive file ids after a user empties the trash; calendar
+  event ids after a manual delete; Slack message timestamps after a channel is
+  archived; any CRM row that links to a mailbox object.
+
+### LL-0166 — n8n reports editor and MCP runs as `$execution.mode === 'test'`, not 'manual'
+
+- **Root Cause**: The LNC paced-send workflows skip work outside a Tue–Thu business
+  window, with a bypass so a person can force a run for testing. The bypass checked
+  `$execution.mode === 'manual'`, which never matched: editor and MCP-triggered runs
+  report `'test'`. Scheduled runs report `'production'`.
+- **Why It Happened**: The value was guessed from the UI label ("Execute workflow" /
+  manual execution) instead of logged from a real run.
+- **Solution**: Check `'test'`, and log `$execution.mode` in the node output so the
+  next reader sees the real value.
+- **Preventive Rule**: Before branching on a platform-supplied enum (execution mode,
+  event type, trigger source), print it from one real run of each path and branch on
+  the observed values. Never infer an enum value from UI wording.
+- **Similar Situations**: webhook event `type` strings; GitHub Actions
+  `github.event_name`; cron vs manual flags in any scheduler.
