@@ -6127,3 +6127,29 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
 - **Similar Situations**: import wizards with a "which column is X" step; config files
   that reference fields by name; any error message that comes out identical N times —
   that repetition is itself the signal that the failure is structural, not per-record.
+
+---
+
+### LL-0164 — "Append at the first blank cell" must key on the identity column, not an optional one
+
+- **Root Cause**: The LNC tracker's `Upsert Firm` n8n workflow (2026-09-27) found the
+  row to append a new firm by scanning column A (Priority) from the first data row and
+  taking the first blank cell. Priority is optional: rows written by the discovery
+  workflow start untriaged with it blank, and archiving a row leaves it blank. Nine
+  archived firms therefore looked like empty rows and were silently overwritten by a
+  20-firm bulk load. The webhook returned `ok: true, action: "created"` for every one.
+- **Why It Happened**: The append logic was written when every row had a priority, so
+  "blank A" and "empty row" were the same thing. The schema doc even said "stop reading
+  when column A is empty", which encoded the same assumption. No write path compared
+  the row count before and after.
+- **Solution**: Scan the identity column (Firm Name, column B), which is non-empty for
+  every real row, and restore the lost rows from the pre-load snapshot the loader had
+  already fetched for dedupe. Log the count before and after every bulk write.
+- **Preventive Rule**: Any "find the next free row/slot/id" routine must test the
+  column that defines row existence (a primary key or required name), never a field
+  that can legitimately be blank. Bulk loaders must snapshot the target before
+  writing and assert `after == before + added` afterwards; a per-row `ok` says nothing
+  about what was displaced.
+- **Similar Situations**: spreadsheet-as-database appends; "next available id" scans
+  over sparse id columns; any upsert that decides create-vs-update by looking at a
+  nullable field; ETL jobs that treat a null in a non-key column as end-of-data.
