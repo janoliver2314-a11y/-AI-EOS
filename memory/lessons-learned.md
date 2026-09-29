@@ -6189,3 +6189,27 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
   the observed values. Never infer an enum value from UI wording.
 - **Similar Situations**: webhook event `type` strings; GitHub Actions
   `github.event_name`; cron vs manual flags in any scheduler.
+
+### LL-0167 — Opening balances dated after the tracking start double count the gap
+
+- **Root Cause**: In a personal budget app, card balances were entered on Sep 26 while
+  counting started Sep 1. Purchases from Sep 1–26 counted as September spending and
+  again as "old debt" paid down in October, understating October's budget by ~$1,650.
+- **Why It Happened**: The balance date and the start month were set separately, days
+  apart, with no check that they meet.
+- **Solution**: Re-date each balance to one day (amount = the app's own computed balance
+  for that day, so nothing owed changes) and start counting the day after.
+- **Preventive Rule**: Any ledger with an opening balance must start counting the day
+  after the balance date. Validate or warn when the two disagree.
+- **Similar Situations**: inventory opening stock vs first import; loan principal vs
+  first payment; migration cut-over dates between two systems.
+
+### LL-0168 — `cp` of a live SQLite database in WAL mode can come out empty
+
+- **Root Cause**: An audit copied `expenses.db` with `cp`; the copy had no rows because
+  recent writes lived in `expenses.db-wal`.
+- **Solution**: `VACUUM INTO '/path/copy.db'` from a read-only connection (or the
+  SQLite backup API) produces a consistent single-file copy.
+- **Preventive Rule**: Never copy a live SQLite file with `cp`; use `VACUUM INTO` or
+  the backup API, then sanity-check a row count before trusting the copy.
+- **Similar Situations**: backups of any running app using SQLite (Kuma, n8n, Home Assistant).
