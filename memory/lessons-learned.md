@@ -6213,3 +6213,24 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
 - **Preventive Rule**: Never copy a live SQLite file with `cp`; use `VACUUM INTO` or
   the backup API, then sanity-check a row count before trusting the copy.
 - **Similar Situations**: backups of any running app using SQLite (Kuma, n8n, Home Assistant).
+
+### LL-0169 — A test "proves" a React Router 7 navigation with an element that was already on screen
+
+- **Root Cause**: An expense-tracker test saved offline, awaited the toast and then an
+  offline banner, then synchronously asserted the Add screen was gone. React Router 7
+  applies every navigation inside `startTransition` (low priority), while the toast is
+  an urgent update; and Testing Library turns off the act environment while `findBy*`
+  waits, so the transition render is time-sliced. The banner lives in the shared shell
+  and was already visible on the old screen, so awaiting it proved nothing. Under
+  full-suite CPU load the old screen was still up right after the toast 7/12 times,
+  and the test failed about 1 run in 8.
+- **Solution**: Wait for the navigation outcome itself:
+  `await waitFor(() => expect(screen.queryByRole('button', { name: 'Save' })).toBeNull())`.
+  Full suite then passed 15/15.
+- **Preventive Rule**: After an action that navigates, assert the new state with
+  `waitFor`/`findBy*` on something unique to the destination or the absence of the
+  source — never a synchronous check, and never an element that lives in a shared
+  layout. Reproduce a "flaky" test under full-suite load before blaming the environment.
+- **Similar Situations**: any React 18+/19 app where state changes run in transitions
+  (router navigation, `useTransition`, `useDeferredValue`); tests that pass alone but
+  fail in the full suite.
