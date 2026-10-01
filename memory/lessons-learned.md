@@ -6234,3 +6234,48 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
 - **Similar Situations**: any React 18+/19 app where state changes run in transitions
   (router navigation, `useTransition`, `useDeferredValue`); tests that pass alone but
   fail in the full suite.
+
+### LL-0170 — A small model ignores the prompt's "never flag X" list; enforce exclusions in code after the model answers
+
+- **Root Cause**: The nightly log-triage prompt told llama3.1:8b that Syncthing peer
+  reconnects, deprecation notices and similar items "must NEVER be listed as concerns".
+  The model listed them anyway on most mornings, so the verdict ladder (LL-0141) kept
+  returning REVIEW and the phone got a needless push nearly every day. The collector
+  even labelled the Syncthing line "routine" in the payload; the model still flagged it.
+- **Why It Happened**: An exclusion in a prompt is a request, not a constraint. Small
+  models pattern-match "this line contains *failed*" more strongly than a negative
+  instruction several hundred tokens away. LL-0141 capped the model's authority over
+  numbers, but its qualitative concerns still went straight into the verdict.
+- **Solution**: The code step that builds the push now drops any concern matching a
+  short list of narrow routine regexes (`hello exchange|peer reconnect`, `deprecat`,
+  `python task runner`, `ufw|firewall`, `context size too large`) before choosing the
+  verdict, and appends "N routine notes filtered" so suppression stays visible. The
+  patterns are deliberately narrow — "syncthing folder errors" still surfaces. 15 test
+  cases, including that morning's verbatim model output.
+- **Preventive Rule**: Treat every "never mention / never flag" instruction to a model
+  as advisory. If an exclusion matters, enforce it in code on the model's output, keep
+  the filter narrow, make what it removed visible, and test it with the model's real
+  wording.
+- **Similar Situations**: LLM classifiers that must skip known-benign categories;
+  summarisers told to omit PII or specific topics; agents told never to call a tool;
+  any "do not" rule whose violation has a cost.
+
+### LL-0171 — A `/path` link without its trailing slash can be bounced to plain `http` by the app behind a TLS proxy
+
+- **Root Cause**: The Homarr tile for the LNC dashboard pointed at
+  `https://host.ts.net/lnc`. The app's nginx (plain HTTP behind `tailscale serve`)
+  answered with `301 Location: http://host.ts.net/lnc/` — an absolute redirect built
+  from its own scheme — and the browser landed on whatever served plain port 80
+  (n8n). With the trailing slash the same URL returned 200 directly.
+- **Why It Happened**: nginx adds the slash to directory requests with an absolute
+  `Location` header, using the scheme it sees (`http`), not the one the client used
+  through the TLS-terminating proxy. The tile had been checked by eye, never fetched.
+- **Solution**: Changed the tile link to `…/lnc/`. Alternatives when you own the app:
+  `absolute_redirect off;` in nginx, or have the proxy pass `X-Forwarded-Proto` and
+  rewrite redirects.
+- **Preventive Rule**: Link sub-path apps with the trailing slash, and verify every
+  dashboard/bookmark link with `curl -sIL` (watch for a scheme change in a `Location`
+  header) rather than trusting that the page "is there".
+- **Similar Situations**: any app mounted under a path behind Tailscale serve, Caddy,
+  Traefik or a cloud load balancer; health-check URLs that silently follow a redirect
+  to a different service.
