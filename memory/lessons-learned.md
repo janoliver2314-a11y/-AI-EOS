@@ -6303,3 +6303,34 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
 - **Similar Situations**: Kuma-style monitors, n8n error notifiers, cron health
   pings, any "alert once" table or Redis set; dashboards mixing fast and slow
   collectors under one stale threshold.
+
+### LL-0173 — A poll trigger's "always one item" assumption breaks when your own automation starts writing to the polled feed
+
+- **Root Cause**: An n8n Gmail poll trigger (every 5 min, no label filter) fed a
+  Code node that read `$input.first()` to find the sender of an inbound reply and
+  log it against a CRM row. For months each poll almost always held one message,
+  so it worked. Then the same system began sending outreach email itself from that
+  mailbox. A poll now held the system's own outgoing message *and* a prospect's
+  reply; the node read only the first (self-sent) one, matched no row, and dropped
+  the reply. The run still reported success, and a second workflow (reply
+  classifier + phone push) handled the reply correctly, which hid the gap: only
+  the "last inbound date" column stayed blank.
+- **Why It Happened**: The single-item assumption (the LL-0006 mechanism) was
+  never wrong in testing because the feed's volume and composition were set by
+  outside senders. Adding automated sending changed what the trigger returns
+  without touching that workflow, so nothing prompted a re-check.
+- **Solution**: Loop `$input.all()` in the extract and match nodes, skip messages
+  labelled `SENT` or sent from the system's own address, and set the shared
+  lookup node (sheet read) to execute once. Verified by replaying the exact failed
+  execution's trigger output through the new code locally before publishing.
+- **Preventive Rule**: Any node downstream of a poll/batch trigger must handle
+  0..N items and must filter out events the system itself produced. When you add
+  a component that writes into a feed something else polls (sending from a
+  watched mailbox, posting to a watched channel, inserting into a watched table),
+  re-check every consumer of that feed for single-item and self-event assumptions.
+  Debug a "missed event" by opening the poll execution and counting trigger items
+  before suspecting the downstream path the user touched.
+- **Similar Situations**: Gmail/IMAP pollers watching a mailbox that also sends;
+  Slack bots reacting to channel messages they also post; DB-change triggers on
+  tables the workflow writes to; webhook receivers that can get batched
+  deliveries. See LL-0006 for the Code-node execution-mode mechanism.
