@@ -6279,3 +6279,27 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
 - **Similar Situations**: any app mounted under a path behind Tailscale serve, Caddy,
   Traefik or a cloud load balancer; health-check URLs that silently follow a redirect
   to a different service.
+
+### LL-0172 — Alert dedup keys that are never forgotten silently suppress a recurring failure
+
+- **Root Cause**: The EmberPrep ops dashboard pushed each red item once, deduped on
+  `source + exact text` in a persistent `alerts_sent` table — and never removed a key.
+  When a Resend API 500 hit, the operator got one push and no follow-up when it
+  cleared; worse, the identical failure returning weeks later would have matched the
+  old key and never paged at all.
+- **Why It Happened**: "Notify once" was implemented as "remember forever". Dedup was
+  designed for the stuck-failure case and the recovery path was never modelled, so no
+  test covered fail → recover → fail again.
+- **Solution**: Each pass compares stored keys with the current red items. A key whose
+  item has cleared gets one `Resolved: <text>` push and is deleted (only after the
+  push succeeds, so a failed push retries). A key superseded by the same kind of alert
+  with new numbers (drift -12 → -40, 3 → 5 bounces) is dropped silently — announcing
+  it as resolved would be false. Deploying it onto an old DB sends one burst of
+  "Resolved" for every stale key; prune or accept that.
+- **Preventive Rule**: Any alert dedup store needs an exit: clear the key when the
+  condition clears, and test the fail → recover → same-fail sequence. Pair it with a
+  per-source staleness threshold scaled to each collector's cadence (≈2× interval) —
+  a fixed 2 h cutoff flagged a 6-hourly check as stale for 4 of every 6 hours.
+- **Similar Situations**: Kuma-style monitors, n8n error notifiers, cron health
+  pings, any "alert once" table or Redis set; dashboards mixing fast and slow
+  collectors under one stale threshold.
