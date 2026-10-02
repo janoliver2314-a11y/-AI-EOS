@@ -6334,3 +6334,64 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
   Slack bots reacting to channel messages they also post; DB-change triggers on
   tables the workflow writes to; webhook receivers that can get batched
   deliveries. See LL-0006 for the Code-node execution-mode mechanism.
+
+### LL-0174 — Clearing a "done" stamp to mean "undone" re-arms every job that reads empty as "not yet done"
+
+- **Root Cause**: A waitlist row's `invited_at` was one-way until a Revoke button
+  learned to reset it to empty so a person could be re-invited. A daily
+  auto-invite cron selected every row with an empty `invited_at`, so revoking
+  three test participants queued them for fresh invites at the next 14:00 run.
+  Caught about 80 minutes before it fired.
+- **Why It Happened**: "Empty means not done yet" was safe while the field only
+  moved one way. The Revoke feature quietly gave empty a second meaning ("done,
+  then deliberately undone"), and the cron, built months later, never knew.
+- **Solution**: Revoke now deletes the row instead of resetting it; a revoked
+  person rejoins through the form. The three rows were deleted by hand before the
+  cron ran.
+- **Preventive Rule**: When a field goes from one-way to resettable, list every
+  reader that treats its empty value as "to do" (crons, dedupe queries, "since X"
+  filters) before shipping the reset. If "undone" must differ from "never done",
+  give it its own state or remove the record; don't reuse empty.
+- **Similar Situations**: soft-deleting by clearing `processed_at`; resetting
+  `sent_at` to resend; un-archiving by clearing `archived_at` while a cleanup job
+  archives anything where it is empty.
+
+### LL-0175 — Resend replaces a custom Message-ID, so you can't pre-set the ID you'll later reply to
+
+- **Root Cause**: To thread a follow-up under a first email, the plan was to set
+  our own `Message-ID` header on the first send and reuse it later in
+  `In-Reply-To`. A test send showed Resend (via SES) replaced it with its own ID.
+  Only Resend's API returns the real one, and only to a full-access key; the
+  automation's key was send-only.
+- **Why It Happened**: "Custom headers are supported" was read as including
+  `Message-ID`. Providers reserve that header.
+- **Solution**: For emails already sent, fetch the real `message_id` once with the
+  full-access key and store it with the contact. For future sends from the
+  send-only key, thread by `Re: <subject>` alone (Gmail and Outlook group it in
+  most cases) and write that limit down.
+- **Preventive Rule**: Before designing threading or reply matching around an
+  outbound email provider, send one test and read back what the provider actually
+  stored (`message_id`, headers). Don't assume a custom `Message-ID` survives.
+  Store the provider's ID at send time if you'll need it later.
+- **Similar Situations**: SendGrid, Postmark and SES-backed senders; any "reply
+  in-thread later" feature; matching inbound replies by `In-Reply-To`.
+
+### LL-0176 — A test email from your own domain to your forwarded address never arrives, so it can't prove an inbox watcher works
+
+- **Root Cause**: To test a Gmail reply watch, a fake reply was sent from
+  `replytest@<domain>` to `jan@<domain>`, which Cloudflare Email Routing forwards
+  to Gmail. Resend reported "delivered", but the message never appeared in Gmail,
+  not even in Spam, so the watcher saw nothing and for ten minutes it looked like
+  a watcher bug.
+- **Why It Happened**: "Delivered" only meant the domain's mail server accepted
+  it. Somewhere in the forwarding chain, mail from the domain to itself was
+  dropped silently (likely a DMARC or loop check). Real outside senders were
+  unaffected.
+- **Solution**: Re-tested with an email from an outside address (a personal
+  Yahoo account); the watcher caught it within one 5-minute poll.
+- **Preventive Rule**: Test inbound-mail automation with a message from an
+  outside domain. When a test email "disappears", search the target inbox
+  (including Spam and All Mail) before debugging the automation. "Delivered" on
+  the sender's side proves nothing about forwarded mailboxes.
+- **Similar Situations**: Cloudflare Email Routing, Google Workspace aliases, any
+  forward-to-Gmail setup; testing support-inbox bots or reply parsers.

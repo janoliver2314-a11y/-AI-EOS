@@ -650,3 +650,23 @@ action (send, charge, publish) but a laptop session is too slow. Keep the
 action body fixed and pre-approved, so the tap approves a known message rather
 than generated text. Buttons work only where the phone can reach the host, such
 as a tailnet, so say that in the push fallback text.
+
+## Pattern: Compile big n8n workflows locally and push them through the API
+
+**Used in**: EmberPrep faculty outreach pipeline (2026-10-02): three workflows
+whose Code nodes carry 12-63 KB of tested logic.
+
+**Shape**: Keep the logic in plain JS with `node --test` tests. A build script
+inlines it into SDK `workflow.ts` files. A deploy script runs
+`@n8n/workflow-sdk`'s `parseWorkflowCode` (strip the `import` line first; the
+parser refuses it) and `validateWorkflow`, then creates or updates the workflow
+through n8n's public API (`POST` / `PUT /api/v1/workflows`) and never publishes.
+After deploying, check that every compiled Code node equals the tested source
+byte for byte.
+
+**When to use**: any n8n workflow too large to paste through an MCP tool call
+safely. Hand-copying tens of KB invites silent changes (agents have "improved"
+text they were only meant to copy); compiling locally removes the copy step.
+Set `availableInMCP: true` in the workflow settings if you also run it via MCP.
+On the n8n tested, a `PUT` to an active workflow updated its live version too,
+but confirm `versionId == activeVersionId` after each deploy.
