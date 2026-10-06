@@ -6421,3 +6421,69 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
 - **Similar Situations**: Mini PCs and NUCs running Docker stacks, Raspberry Pi
   servers, any headless box far from its owner; Uptime Kuma or other monitors
   hosted on the machine they watch.
+
+### LL-0178 — Bank exports reword lines they already sent, so description-based import ids let the same money in twice
+
+- **Root Cause**: A budget app's CSV import skipped a row when its external id (a hash
+  that includes the description) was already stored. Chase sent the same Oct 1
+  paychecks and Spotify charge in two exports with different wording
+  ("ORIG CO NAME:DFAS-CLEVELAND…" vs "DFAS-CLEVELAND NAVY ACT…"). The second import
+  saw new ids and added $15,073.80 of pay that never arrived.
+- **Why It Happened**: Banks rewrite descriptions between a pending and a posted
+  export, and between export formats. The only other duplicate check compared imports
+  with hand-typed lines, not with earlier imports.
+- **Solution**: Added a `repeat` flag: a row with the same account, type and amount, and
+  a date within ±1 day of a line from an earlier import, starts unchecked with "already
+  imported? same date and amount". One old line covers one new row, so genuine
+  identical twins can still be ticked.
+- **Preventive Rule**: Never treat a description-derived hash as the identity of a bank
+  transaction. Back it with an amount + date + account check against earlier imports,
+  and warn rather than silently insert or silently drop.
+- **Similar Situations**: OFX/QFX re-downloads, PayPal and Venmo exports, card issuers
+  that append merchant city or FX details later, any "import the last 90 days again"
+  workflow.
+
+### LL-0179 — A "mark as paid" tap posts the line with the tap's date, so the bank import later misses it
+
+- **Root Cause**: The rent and mortgage reminders went overdue. Tapping "received" posted
+  them dated Oct 5, the day of the tap. The bank's real lines (Sep 30, Oct 1) arrived by
+  CSV the next day. Import matching only looked at still-*expected* lines (±5 days) or
+  typed lines (±3 days, exact amount), so both copies stayed and October counted the
+  mortgage twice.
+- **Why It Happened**: The confirm action changed the line's status but kept it looking
+  like any other typed purchase. The matcher had no idea it stood in for a scheduled bill
+  that the bank would report on its own date.
+- **Solution**: The import treats a typed, posted line linked to a recurring item like an
+  expected one. A bank line within 7 days and 5 % replaces it (soft-delete, so undo
+  restores it). Rent's recurring day also moved to when the wire actually lands (28th).
+- **Preventive Rule**: When a user confirms a scheduled item by hand, keep its link to the
+  schedule and let the authoritative feed (bank import or sync) replace it later. Size
+  the match window to the confirm delay, not to bank posting lag.
+- **Similar Situations**: "mark invoice paid" before the payment-processor webhook,
+  manual timesheet approval before a payroll export, delivery "received" taps before a
+  carrier scan.
+
+### LL-0180 — A duplicate-suspicion rule that looked right on paper flagged 5 of 5 real lines wrongly; replay on a copy of live data before shipping
+
+- **Root Cause**: The spec for a "possible doubles" list paired two lines on the same
+  account within 3 days and 25 % of the amount. Every unit test passed. A replay against a
+  copy of the live database (already cleaned that morning, so the right answer was zero)
+  flagged five pairs, all different purchases: Wendy's vs NEX, Amazon vs a Venmo
+  breakfast, two different PayPal payees, and more.
+- **Why It Happened**: The tolerance came from the one example it had to catch ($79 vs
+  $97.77). The tests were written from the same examples, so they could not show how
+  dense real spending is: a household makes several similar-sized purchases on the same
+  card every few days.
+- **Solution**: Typed lines now pair within 5 %, or within 25 % only when the
+  descriptions share a 4+-letter word. Two imported lines pair only at equal amounts. The
+  replay then showed 0 pairs on the clean data and exactly the intended pair after
+  re-importing the problem file. The copy came from streaming `expenses.db` and
+  `expenses.db-wal` out of the container side by side (read-only on the server). Opening
+  the pair locally checkpoints it (see LL-0168).
+- **Preventive Rule**: Before deploying any heuristic that flags or merges user data
+  (duplicates, categories, matching), run it read-only over a copy of real data. Check
+  both directions: the known-bad cases are caught, AND a known-clean slice produces
+  (almost) nothing. Treat "fires on clean data" as a failing test.
+- **Similar Situations**: fraud or anomaly alerts, auto-categorisation rules,
+  contact or lead dedupe, fuzzy matching of payments to invoices, alert thresholds in
+  monitoring.
