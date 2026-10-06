@@ -6395,3 +6395,29 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
   the sender's side proves nothing about forwarded mailboxes.
 - **Similar Situations**: Cloudflare Email Routing, Google Workspace aliases, any
   forward-to-Gmail setup; testing support-inbox bots or reply parsers.
+
+### LL-0177 — A home server that hard-freezes stays dead for hours: Linux won't reboot itself by default, and a 3-hour dead-man grace never fires for a 2.5-hour outage
+
+- **Root Cause**: The EliteDesk froze completely at 05:12 UTC. The journal just
+  stops: no shutdown, no OOM, no lockup or driver errors, empty pstore. It sat
+  frozen until someone power-cycled it 2.5 hours later. The healthchecks.io
+  dead-man (10-minute period, 3-hour grace) never alerted, and the month still
+  showed "All good".
+- **Why It Happened**: Ubuntu ships `kernel.panic=0`, `softlockup_panic=0` and
+  `hardlockup_panic=0`, so a lockup leaves the box frozen forever. It also
+  blacklists the Intel `iTCO_wdt` hardware-watchdog driver, so systemd had no
+  watchdog to arm. The grace window had been set to avoid noise and was longer
+  than a realistic outage, so the alert could never fire.
+- **Solution**: Added `/etc/sysctl.d/90-lockup-reboot.conf` (softlockup_panic=1,
+  hardlockup_panic=1, panic=10). Loaded `iTCO_wdt` via
+  `/etc/modules-load.d/watchdog.conf` and added a systemd `system.conf.d`
+  drop-in (RuntimeWatchdogSec=60s, RebootWatchdogSec=10min), then confirmed
+  `/sys/class/watchdog/watchdog0/state` = active. Cut the dead-man grace to
+  45 minutes.
+- **Preventive Rule**: Every unattended Linux box gets panic-on-lockup sysctls
+  plus an armed hardware watchdog on day one. Check with
+  `sysctl kernel.panic` and `ls /dev/watchdog0`. Size dead-man grace windows
+  against the shortest outage you'd want to hear about, not against noise.
+- **Similar Situations**: Mini PCs and NUCs running Docker stacks, Raspberry Pi
+  servers, any headless box far from its owner; Uptime Kuma or other monitors
+  hosted on the machine they watch.
