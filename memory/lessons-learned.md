@@ -6512,5 +6512,7 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
   touches a lockfile or requirements file. Skip routine version-update PRs on solo
   projects (noise), and leave auto-merge off unless the owner opts in.
 - **Similar Situations**: any repo with a scheduled scan that only emails on failure
-  (secret scanning, licence checks, container image CVEs, uptime probes); the other four
-  repos here (`lnc-ops`, `-AI-EOS`, `Task-command`, `Task-tracker`) still have Dependabot off.
+  (secret scanning, licence checks, container image CVEs, uptime probes). The other four
+  repos here (`lnc-ops`, `-AI-EOS`, `Task-command`, `Task-tracker`) got Dependabot alerts +
+  security updates the same day (2026-10-07). They have no daily audit workflow, because
+  GitHub's alerts are enough for them.
