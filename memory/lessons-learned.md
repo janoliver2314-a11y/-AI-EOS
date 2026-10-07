@@ -6516,3 +6516,22 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
   repos here (`lnc-ops`, `-AI-EOS`, `Task-command`, `Task-tracker`) got Dependabot alerts +
   security updates the same day (2026-10-07). They have no daily audit workflow, because
   GitHub's alerts are enough for them.
+
+### LL-0182 — A reply matcher keyed only on sender address would have dropped a CC'd colleague's reply; fall back to the thread ID
+
+- **Root Cause**: Two n8n workflows (reply auto-log and reply triage) matched each inbound
+  email to a CRM row only by looking up the sender in the row's Email column. When a
+  managing partner looped three colleagues into a live thread, any reply from those
+  colleagues would have been dropped silently: no tracker update, no phone alert.
+- **Why It Happened**: The matcher assumed the person emailed is the person who answers.
+  Assistants, paralegals and CC'd colleagues break that. The workflows already extracted
+  the message's thread ID but never used it.
+- **Solution**: Match by sender first, then fall back to the thread ID stored on the row.
+  Exclude bounce notices (mailer-daemon/postmaster), no-reply senders and the user's own
+  mail from the fallback, because a delivery-failure notice lands in the firm's thread and
+  would otherwise count as a reply. Tested offline against live tracker data before
+  publishing.
+- **Preventive Rule**: Any inbound-mail-to-record matcher uses two keys: sender address
+  and thread/conversation ID. The thread fallback always excludes system senders.
+- **Similar Situations**: support-ticket intake, recruiting pipelines, any CRM auto-logger
+  where a third party can reply on someone's behalf.
