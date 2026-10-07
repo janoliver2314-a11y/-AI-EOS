@@ -6487,3 +6487,30 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
 - **Similar Situations**: fraud or anomaly alerts, auto-categorisation rules,
   contact or lead dedupe, fuzzy matching of payments to invoices, alert thresholds in
   monitoring.
+
+### LL-0181 — A weekly dependency audit caught a critical RCE, but nothing proposed the fix; turn on Dependabot security updates and audit daily
+
+- **Root Cause**: The NCLEX platform's scheduled "Security audit" workflow (pip-audit +
+  `npm audit`) ran only on Mondays. On 2026-10-05 it failed on a critical Next.js RCE
+  (GHSA-vcvr-r3jv-pc5j, in `next/og` ImageResponse, which the site's
+  `opengraph-image` route used) plus 13 PyJWT advisories in the library that verifies
+  every login. The fix was a patch bump of each, but it shipped two days later, only after
+  the owner noticed the failure email and asked.
+- **Why It Happened**: The audit was built to *detect*, not to *fix*. Dependabot alerts
+  and security updates were off on all five repos, so GitHub never opened a fix PR. A
+  weekly cadence also meant an advisory published on a Tuesday could sit for six days
+  before any run saw it.
+- **Solution**: Bumped next 16.3.5 → 16.3.8 and PyJWT 2.13.0 → 2.15.1 (PR #83; CI's full
+  backend suite against Supabase was the real gate, because local tests had no database).
+  Then turned on Dependabot alerts + security updates (`PUT repos/{r}/vulnerability-alerts`,
+  `PUT repos/{r}/automated-security-fixes`). Moved the audit to daily and added a
+  `pull_request` trigger on the dependency manifests, so Dependabot's own PRs are audited
+  before merge (PR #84).
+- **Preventive Rule**: Every deployed repo gets three things: (1) Dependabot alerts and
+  security updates on, so a fix PR shows up without anyone asking; (2) a scheduled audit
+  that runs *daily*, which costs nothing when clean; (3) the same audit on any PR that
+  touches a lockfile or requirements file. Skip routine version-update PRs on solo
+  projects (noise), and leave auto-merge off unless the owner opts in.
+- **Similar Situations**: any repo with a scheduled scan that only emails on failure
+  (secret scanning, licence checks, container image CVEs, uptime probes); the other four
+  repos here (`lnc-ops`, `-AI-EOS`, `Task-command`, `Task-tracker`) still have Dependabot off.
