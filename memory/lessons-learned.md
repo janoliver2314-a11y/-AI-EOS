@@ -6535,3 +6535,33 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
   and thread/conversation ID. The thread fallback always excludes system senders.
 - **Similar Situations**: support-ticket intake, recruiting pipelines, any CRM auto-logger
   where a third party can reply on someone's behalf.
+
+### LL-0183 — An LLM research agent told to "be thorough" quit after 11 searches; enforce the effort floor in the harness from measured tool counts, not from the prompt
+
+- **Root Cause**: A scheduled lead-research job (`claude -p` on a home server, project
+  lnc-ops) was asked for "up to 30" firms in a metro area and told in its prompt to
+  "search every town, several phrasings per town; stop only when you have N fits or have
+  genuinely run out." It ran 11 web searches, declared the region exhausted, and returned
+  13 candidates, of which 3 were usable. The wrapper accepted the run because the CLI
+  reported a clean `end_turn`.
+- **Why It Happened**: "Up to N" plus "don't pad with weak fits" reads as permission to stop
+  early, and the agent's own judgement of "run out" was the only stopping condition.
+  Thoroughness instructions in a prompt are advisory; nothing outside the model checked
+  them. A second cause hid inside the same result: 10 of the 13 finds were dropped because
+  the email fallback only knew one state's bar directory, so a low count can mean "stopped
+  early" and "couldn't use what it found" at once. Read the raw output before tuning.
+- **Solution**: The wrapper now measures effort itself: it sums `webSearchRequests` across
+  `modelUsage` in the CLI's JSON result (the agent's claimed count is only a fallback). If
+  the run returned fewer than the requested items AND fewer than a floor of 25 searches, it
+  resumes the same session (`claude -p "<keep going: N done, M left>" --resume <session_id>`)
+  and asks for one complete JSON answer covering old and new results, up to 3 passes and
+  within the original overall timeout. A failed resume keeps the previous pass's results
+  instead of failing the job. The summary pushed to the user now reports the search count.
+- **Preventive Rule**: When an unattended agent's output quality depends on effort (searches,
+  pages read, files checked), define a numeric floor, measure it from the harness's own
+  usage/tool counters, and enforce it with a resume loop, never with prompt wording alone.
+  Report the measured effort alongside the result so a short run is visible.
+- **Similar Situations**: research/lead-generation agents, code-search or audit agents told to
+  "check every file", eval graders, any `claude -p` / Agent SDK job whose result is accepted
+  on `end_turn`. Related: never trusting a subagent's self-reported *results* (see the
+  worktree/self-report entries above); this is the same rule applied to *effort*.
