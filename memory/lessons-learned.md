@@ -6565,3 +6565,32 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
   "check every file", eval graders, any `claude -p` / Agent SDK job whose result is accepted
   on `end_turn`. Related: never trusting a subagent's self-reported *results* (see the
   worktree/self-report entries above); this is the same rule applied to *effort*.
+
+### LL-0184 — An out-of-office auto-reply was logged as a real reply, which silently ended a prospect's follow-up sequence
+
+- **Root Cause**: An n8n reply auto-logger (project lnc-ops) set a CRM row to `Replied`
+  for any inbound email from a tracked address. Setting `Replied` stops the automated
+  follow-up sequence. An attorney's out-of-office answer, arriving 6 seconds after a
+  follow-up went out, flipped him to `Replied`; the dashboard then asked "Interested or
+  Not Interested?" (the only two choices) and he was marked Not Interested. He had never
+  answered, and he would have received no further emails.
+- **Why It Happened**: The logger's filter excluded bounce notices and no-reply robots but
+  not auto-replies, which come from the person's real address. A separate LLM triage step
+  did classify the message correctly as OUT_OF_OFFICE, but it was advisory and read-only, so
+  the state change had already happened in a different workflow that never consulted it.
+- **Solution**: The logger now skips auto-replies (subject: "Out of Office", "Automatic
+  reply", "Auto-Reply", …; first lines: "I am out of the office", "on vacation", …) before
+  any status change or last-contact stamp. The triage step also reads the return date
+  (several date formats, weekday words, "next week") and writes a hold that the follow-up
+  sender respects; with no usable date it holds 14 days, 28 if a second away message
+  arrives within 45 days. The wrongly closed record was reset by hand.
+- **Preventive Rule**: Any automation that changes a record's state because "they wrote
+  back" must first filter automatic replies (out-of-office, auto-acknowledgements, bounces,
+  no-reply senders). When one workflow classifies messages and another changes state, the
+  state-changing one must apply the same filter itself; don't assume the classifier ran
+  first. Never offer a binary human choice (Interested / Not) for a message that isn't a
+  human reply.
+- **Similar Situations**: CRM and outreach auto-loggers, support-ticket "customer
+  responded" triggers, recruiting pipelines, SLA timers that stop on reply, any sequence
+  tool (Mailchimp/Lemlist-style) that ends on first inbound message. Related: LL-0182
+  (reply matching by thread ID; same workflows).
