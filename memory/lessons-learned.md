@@ -6594,3 +6594,37 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
   responded" triggers, recruiting pipelines, SLA timers that stop on reply, any sequence
   tool (Mailchimp/Lemlist-style) that ends on first inbound message. Related: LL-0182
   (reply matching by thread ID; same workflows).
+
+### LL-0185 — A research agent's "nothing found" was really "couldn't open the source", because a half-browser User-Agent and a Google Drive link both returned HTML instead of the report
+
+- **Root Cause**: An unattended `claude -p` research run (project NCLEX AI Platform, "Find
+  schools") returned zero results for Colorado. The state board's page answered 403 to the
+  agent's page fetcher and to the run's own PDF tool, which sent the short User-Agent
+  `Mozilla/5.0 (X11; Linux x86_64)`. A full Chrome string got 200. Behind that page, the
+  reports themselves were Google Drive `file/d/<id>/view` links, which return an HTML viewer,
+  not the PDF. The agent then tried `curl`, which the run's tool allowlist refuses by design,
+  and gave up with an empty list.
+- **Why It Happened**: The tool already "sent a browser User-Agent", so blocking looked
+  ruled out; but some WAFs score the whole string, and a truncated one reads as a bot. The
+  tools also assumed every URL was the file itself, so an HTML page could only fail in the
+  parser. Worst, the empty result had the same shape as a genuine "no program qualifies",
+  so it would have been recorded as a real negative if nobody had read the notes.
+- **Solution**: A shared stdlib fetch helper for the run's allowed tools: a full browser
+  User-Agent; Drive `file/d/<id>/view` and `open?id=` rewritten to
+  `uc?export=download&id=<id>&resourcekey=<key>` (Sheets to `export?format=xlsx`); and when
+  the response is HTML, print the page's links (`text | absolute url`) instead of failing,
+  so the agent can find the report through a tool it is allowed to run. The allowlist was
+  not widened. The retry read both PDFs and found a qualifying school. The dashboard now
+  tells "couldn't read the source" apart from "none fit" and offers a retry only for the
+  first.
+- **Preventive Rule**: For agents that read public data, give the allowed fetch tools a
+  complete, current browser User-Agent, handle "share/view" links from Drive, Dropbox,
+  OneDrive or SharePoint, and make an HTML response yield its links rather than an error.
+  Make the agent report *why* a result is empty, and keep "source unreadable" a separate
+  outcome from "no matches" everywhere downstream. Never treat an empty result as a
+  negative without that reason.
+- **Similar Situations**: government and university sites behind WAFs; reports posted as
+  Drive/Box/Dropbox share links; agents whose sandbox forbids curl/wget; scrapers that
+  record "0 results" when a page changed layout or returned a captcha. Related: LL-0145
+  (a 403 from an edge proxy is not a permissions answer), LL-0183 (enforce research effort
+  from counters, not prompt wording).

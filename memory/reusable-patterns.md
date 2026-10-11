@@ -670,3 +670,21 @@ text they were only meant to copy); compiling locally removes the copy step.
 Set `availableInMCP: true` in the workflow settings if you also run it via MCP.
 On the n8n tested, a `PUT` to an active workflow updated its live version too,
 but confirm `versionId == activeVersionId` after each deploy.
+
+## Pattern: Give a sandboxed research agent fetch tools that turn "share" pages into files and pages into link lists
+
+**Used in**: EmberPrep "Find schools" runner (2026-10-11), `ops/n8n/faculty-outreach/discovery/fetch_url.py`,
+shared by `pdf_text.py` and `sheet_text.py`.
+
+**Shape**: The agent may run only a few named scripts (no curl/wget). Those scripts share
+one small stdlib helper that (1) sends a full, current browser User-Agent; (2) rewrites
+cloud "share/view" links to direct downloads (Drive `file/d/<id>/view` and `open?id=` to
+`uc?export=download&id=<id>&resourcekey=<key>`, Sheets to `export?format=xlsx`); and (3)
+when the response is HTML, prints the page's links as `text | absolute url` with a header
+saying "this is a web page, pass a link back to read it". The runner copies the helper into
+each job folder next to the scripts.
+
+**When to use**: any agent that reads public reports under a narrow tool allowlist. It
+recovers the two common dead ends (the page fetcher is blocked; the link is a viewer, not
+the file) without widening the allowlist. Test it on the real site from the host that runs
+the agent, since blocking depends on the requesting IP and client.
