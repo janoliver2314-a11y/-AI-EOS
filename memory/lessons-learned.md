@@ -4915,6 +4915,21 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
   'first(...)'`; log-scanning `if` conditions; any CI script developed on macOS and
   promoted to a Linux runner — BSD vs GNU buffering differences hide exactly this class
   of bug until the platform switch.
+- **Recurrence (2026-10-18, same repo, production this time)**: a new Home Assistant
+  step in `backup.sh` checked its config archive with `tar tzf | grep -q
+  '^\./\.storage/auth$'`. The match is entry 18 of 57, so GNU tar died of SIGPIPE
+  on every run and a good archive counted as failed. The nightly backup aborted
+  before restic, so that night had no snapshot. The same function also guards
+  Home Assistant updates, so every one-tap update would have refused to run. The
+  hermetic test passed for two reasons. Its fake archive had 3 entries, too few
+  for grep to exit while tar was still writing. And the Mac's bsdtar exits 0 on
+  a broken pipe anyway. Fix: stack-updates `5b68b06` (`grep >/dev/null`), with a
+  regression test whose listing runs ~400KB past the match. That test fails
+  against the old code only on the server. So a written lesson in the very repo
+  that caused it did not stop the next new function from repeating it. What
+  would catch it is a check, not prose: a suite lint that flags
+  `| grep -q` after any producer that isn't a short `printf`/`echo`, with test
+  fixtures sized like real data, run on the Linux host.
 
 ### LL-0130 — "Only the config changes when we move hosts" holds only for tools that touch the resource through a remotable API
 
