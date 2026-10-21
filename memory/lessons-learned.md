@@ -6707,3 +6707,69 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
 - **Solution**: Granted **Actions: Read-only** and switched the bot to `GET /actions/runs?head_sha=<sha>` plus `GET /actions/runs/{id}/jobs`, whose jobs carry the same `name`/`status`/`conclusion` fields as check runs ("Commit statuses" is not a substitute: it reports third-party statuses such as Vercel, not Actions jobs). Set Contents and Pull requests to Read and write explicitly. Trimmed the token file to one copy (a `github_pat_` token is 93 characters). Editing a token's permissions keeps the same token string, so no re-paste was needed.
 - **Preventive Rule**: After creating or editing a fine-grained token, probe each grant with a real call before relying on it: a read of the endpoint the job uses, and for write grants a harmless write (`POST /git/blobs` makes a dangling blob). When saving a secret through a hidden prompt, check the saved file's length and that the prefix occurs exactly once. For CI results, read the Actions API with Actions: read, not check-runs.
 - **Similar Situations**: Any bot or CI helper driven by a fine-grained PAT (release tooling, auto-merge, dependency bots); a `gh` CLI signed in with a fine-grained PAT, which hits the same 403 on check-runs; GitHub App installations, where the permission list is also curated and changes over time.
+
+---
+
+### LL-0194 — n8n's Read/Write Files node denies every path by default
+
+- **Root Cause**: A workflow that writes Gmail attachments to a bind-mounted
+  folder failed with "Access to the file is not allowed." n8n (2.x) only lets
+  the Read/Write Files node touch directories listed in
+  `N8N_RESTRICT_FILE_ACCESS_TO`; with the variable unset, nothing outside its
+  own config dir is writable, and `N8N_BLOCK_FILE_ACCESS_TO_N8N_FILES`
+  (default true) blocks that dir too.
+- **Why It Happened**: Mounted the volume and assumed a bind mount is enough;
+  the restriction is a separate env setting that is not mentioned by the
+  node's error.
+- **Solution**: Added `N8N_RESTRICT_FILE_ACCESS_TO=/home/node/<folder>` to the
+  n8n compose environment (restart required) and gave both containers the
+  same uid (1000) so either can write the folder.
+- **Preventive Rule**: Any n8n workflow that reads or writes host files needs
+  a volume mount **and** the allow-list env var; test with a pinned
+  `test_workflow` run that performs the real write before activating.
+- **Similar Situations**: Any container tool with a path allow-list
+  (n8n, Node-RED, Home Assistant allowlist_external_dirs).
+
+---
+
+### LL-0195 — nginx fails to start when a `proxy_pass` upstream name does not resolve yet
+
+- **Root Cause**: `proxy_pass http://other-container:port/;` is resolved at
+  nginx startup; if that container is down or not yet created, nginx refuses
+  to start and takes the unrelated static site down with it. A reload after
+  editing a bind-mounted config is also required: `docker compose up -d`
+  sees no change and does nothing.
+- **Why It Happened**: Added a location block for a new optional service to
+  an existing nginx container's config.
+- **Solution**: `resolver 127.0.0.11 valid=30s; set $up http://name:port;
+  rewrite ^/prefix/(.*)$ /api/$1 break; proxy_pass $up;` — a variable makes
+  the lookup lazy, so nginx starts regardless and returns 502 only on that
+  path. Apply with `docker exec <nginx> nginx -t && nginx -s reload`.
+- **Preventive Rule**: When one nginx fronts several containers, always
+  proxy optional upstreams through a variable + resolver, and reload
+  explicitly after editing a mounted config.
+- **Similar Situations**: Any reverse proxy with multiple backends in Docker
+  (Caddy and Traefik handle this natively; plain nginx does not).
+
+---
+
+### LL-0196 — `claude -p` keeps transcripts on disk and limits argv size
+
+- **Root Cause**: Running Claude Code headless on sensitive input (medical
+  records) would have written the full prompt and reply into
+  `~/.claude/projects/<cwd-hash>/*.jsonl` on an unencrypted disk, and a
+  prompt passed as an argv string over ~128 KB fails (Linux MAX_ARG_STRLEN).
+- **Why It Happened**: The existing drafter pattern passes short prompts as
+  an argument and never had to think about where the CLI stores its session.
+- **Solution**: Pipe the prompt on stdin (`subprocess.run(cmd, input=prompt)`),
+  run with `CLAUDE_CONFIG_DIR` pointing at a fresh mode-700 directory under
+  `/dev/shm` (tmpfs) that is also the cwd, and `shutil.rmtree` it in a
+  `finally`. Auth still comes from `CLAUDE_CODE_OAUTH_TOKEN` in the env, so a
+  fresh config dir needs no login.
+- **Preventive Rule**: For any headless LLM CLI run on data that must not
+  persist, (1) feed the prompt via stdin, (2) redirect the tool's state dir
+  to RAM and delete it, (3) log counts only, (4) write a test that asserts
+  the prompt text is absent from argv and the state dir is gone afterwards.
+- **Similar Situations**: codex / gemini CLIs, any agent harness that keeps
+  session files; shell tools given large inputs (prefer stdin or a temp
+  file over argv).
