@@ -6773,3 +6773,37 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
 - **Similar Situations**: codex / gemini CLIs, any agent harness that keeps
   session files; shell tools given large inputs (prefer stdin or a temp
   file over argv).
+
+---
+
+### LL-0197 — 87 Dependabot alerts were 4 pinned packages in one service, counted twice, and the riskiest one parsed untrusted email attachments
+
+- **Root Cause**: A FastAPI service pinned exact versions in
+  `requirements.txt` (Pillow, PyMuPDF, cryptography, python-multipart) and
+  nobody revisited them after the build. `requirements-dev.txt` starts with
+  `-r requirements.txt`, so GitHub raised every advisory once per manifest:
+  the "87 vulnerabilities, 2 critical" banner was really ~43 advisories
+  across 4 packages. Pillow and PyMuPDF were the real exposure, because the
+  service opens PDFs and images that arrive as email attachments.
+- **Why It Happened**: Exact pins make builds reproducible but freeze
+  security fixes; the push banner reads as a scary total and is easy to
+  postpone because it doesn't say where the alerts are.
+- **Solution**: `gh api repos/<o>/<r>/dependabot/alerts?state=open` grouped by
+  manifest + package + `first_patched_version`; bumped each package to the
+  highest patched version listed (staying inside the current major line
+  when a patch exists there: PyMuPDF 1.26.7, not 2.0); ran the full test
+  suite; deployed; checked `pip list` and the imports inside the running
+  container; pushed. GitHub's rescan took a few minutes after the push
+  (banner and API still showed 87 open right after) and then marked all 87
+  fixed.
+- **Preventive Rule**: Treat the alert count as noise until it's grouped:
+  rank by "does this package parse untrusted input in production" first,
+  severity second. Verify the fix where it runs (container), not only in
+  the local venv, since the server's Python can differ (3.12 vs 3.14 here).
+  In Claude Code auto mode the deploy itself is classified as a production
+  deploy and denied; finish the bump, tests and commit first, then ask the
+  human once to approve the deploy.
+- **Similar Situations**: Any pinned `requirements.txt` / lockfile in a
+  long-running self-hosted service; `-r` includes or monorepo manifests
+  that duplicate alerts; image/PDF/archive parsers fed by email, uploads or
+  scraping.
