@@ -6807,3 +6807,71 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
   long-running self-hosted service; `-r` includes or monorepo manifests
   that duplicate alerts; image/PDF/archive parsers fed by email, uploads or
   scraping.
+
+---
+
+### LL-0198 — "Deployed" was a branch preview: three merges never reached production
+
+- **Root Cause**: Three PRs were merged to `main` in one afternoon and Vercel
+  started no production build for any of them. GitHub showed no Vercel
+  status at all on the three merge commits, while each PR branch had built
+  a READY preview. Production kept serving the morning's build, so a
+  student-facing fix and two monitoring changes were reported as "live"
+  when they were not.
+- **Why It Happened**: "Live" was inferred from a dashboard panel that read
+  "latest deploy READY, 0 h old". That was the newest deployment of ANY
+  kind, a branch preview, not production. The merge itself and green CI
+  were taken as proof of deployment because merges to `main` had always
+  auto-deployed before. The gap only surfaced when a brand-new route
+  answered 404 in production.
+- **Solution**: Listed the project's deployments filtered by target
+  production and the merge SHA (Vercel API/MCP `list_deployments`) and found
+  none. Triggered a production deployment of the `main` SHA for each
+  project, then confirmed by hitting a route that exists ONLY in the new
+  code (401 instead of 404).
+- **Preventive Rule**: Never call a change deployed until (1) the platform's
+  deployment list shows a READY **production** deployment for the exact
+  merge SHA, and (2) a request to something only the new code serves gives
+  the new answer. A "latest deploy" field, a green CI run or a successful
+  merge proves none of this.
+- **Similar Situations**: Any git-integrated host (Vercel, Netlify, Render,
+  Fly), multiple projects deployed from one repo, dashboards that summarise
+  deploys without separating preview from production, and any status
+  report written straight after `gh pr merge`.
+
+---
+
+### LL-0199 — A paid API ran dry for a week because its failures were only logged
+
+- **Root Cause**: The AI tutor's Anthropic account ran out of credit. Every
+  tutor turn then failed with "credit balance is too low" for about a week.
+  One student tried five times and gave up before anyone knew. The backend
+  logged each failure, but the logs lived in the hosting provider's
+  console, which nothing watched. A second log-and-swallow path (claim
+  indexing on publish) had silently left one item out of the search index
+  two days earlier.
+- **Why It Happened**: Failure handling was written to protect the request
+  ("log it, don't crash"), with no thought for who reads the log. The
+  uptime monitor only hit a shallow `/health` that never touches the paid
+  dependencies, so it stayed green the whole time. Usage was low enough
+  that no human noticed the silence.
+- **Solution**: (1) A logging handler on the app's root logger copies every
+  ERROR into an `app_errors` table, and the ops dashboard turns any kind seen
+  in the last 24 h into one phone push (no count in the text, so one outage
+  pages once). (2) A secret-guarded `/health/deep` makes one real, minimal
+  call to each dependency with the production keys (1 output token to the
+  LLM, one embedding, one vector-DB read, one DB read, the auth JWKS), polled
+  every 15 min. (3) Browser crashes are POSTed to the backend and logged at
+  ERROR, so they take the same path. (4) The tutor degrades to showing the
+  retrieved reviewed facts instead of an error when generation fails.
+- **Preventive Rule**: Every `except: log` on a user-facing path needs an
+  owner who is paged, not just a log line. Health checks must exercise the
+  paid and credentialed dependencies with the real keys, because an empty
+  balance, a revoked key or a retired model all pass a shallow `/health`.
+  Hook the logger rather than sprinkling alert calls, so future error paths
+  are covered automatically. Make the recorder unable to fail its caller.
+- **Similar Situations**: Any LLM, embedding, SMS, email or payment API on
+  prepaid credit or rotating keys; cron jobs whose failures go to stdout;
+  background indexing or webhooks triggered "fire and forget" from a
+  request; products with low traffic, where silence looks the same as
+  nobody using it.
