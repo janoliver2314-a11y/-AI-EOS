@@ -6875,3 +6875,46 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
   background indexing or webhooks triggered "fire and forget" from a
   request; products with low traffic, where silence looks the same as
   nobody using it.
+
+---
+
+### LL-0200 — Moving n8n Code nodes to an external task runner: measure first, and the update tooling must move both images
+
+- **Root Cause**: n8n deprecated its internal task-runner mode ahead of v3, so
+  Code nodes had to move into a separate `n8nio/runners` container. Three
+  things were not obvious from the docs: (1) the runner's launcher only
+  passes an allow-list of environment variables to the JavaScript process,
+  and `TZ` is not on it; (2) the runners image is published on Docker Hub,
+  not on n8n's own registry (`docker.n8n.io/n8nio/runners:<tag>` is "not
+  found"); (3) when the runner is down, Code-node executions do not error,
+  they wait, so every existing health check (healthz, readiness, counts,
+  running image) stays green.
+- **Why It Happened**: The plan assumed the time zone would carry over and
+  that "container up" meant "working". A probe workflow run BEFORE the switch
+  showed plain JS `Date` already ran on UTC under the internal runner (only
+  Luxon followed `GENERIC_TIMEZONE`), so the obvious "fix" (mounting the Rome
+  zone file) would have CHANGED behaviour, not preserved it.
+- **Solution**: Baseline probe workflow (webhook -> Code nodes reporting time
+  zone, Luxon zone, `$execution`, `Buffer`, binary write + `getBinaryDataBuffer`
+  read, per-item mode) run before and after; outputs identical. Proof the
+  runner is really used: stop it, the probe hangs; start it, the hung
+  execution completes. Upgrade script: preflight checks the runners tag on
+  Docker Hub BEFORE stopping production, rewrites both image lines, and
+  verification requires the runner on the new tag AND
+  `Registered runner "launcher-javascript"` in n8n's log since `up -d`;
+  rollback restores both via the compose backup. Hermetic tests for each,
+  mutation-checked.
+- **Preventive Rule**: Before moving code to a new execution environment,
+  run a probe that prints what the code can observe (time zone, env, allowed
+  modules, helpers) in the OLD environment and diff it against the new one;
+  preserve what you measured, not what the config says. A component that
+  makes work wait rather than fail needs its own explicit check in every
+  health gate. Sidecars that must match the main image's version get
+  rewritten, verified and rolled back together, and their tag's existence is
+  checked before anything is stopped.
+- **Similar Situations**: Any launcher or sandbox that filters environment
+  variables (task runners, CI executors, systemd units with clean env); n8n
+  Code nodes using `toLocaleString`/`getHours` without a `timeZone`; version-
+  locked sidecars (DB proxies, workers, runners) published to a different
+  registry than the main image; n8n 2.x's public API refuses `DELETE` on a
+  workflow with HTTP 409 until it is archived (`POST /workflows/{id}/archive`).
