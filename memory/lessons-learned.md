@@ -6918,3 +6918,41 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
   locked sidecars (DB proxies, workers, runners) published to a different
   registry than the main image; n8n 2.x's public API refuses `DELETE` on a
   workflow with HTTP 409 until it is archived (`POST /workflows/{id}/archive`).
+
+---
+
+### LL-0201 — A new container-down alerter fired a false alarm within hours: `docker compose up --force-recreate` briefly renames the old container
+
+- **Root Cause**: A per-minute watcher alerted on any restart-policy container
+  that was not running for 3 runs, and on tracked containers that vanished.
+  During a stack-wide `docker compose up -d --force-recreate`, compose parks
+  the old container for a few seconds as `<12-hex-id>_<name>` (stopped) while
+  it creates the new one. The watcher sampled that name once, started
+  tracking it, then reported "3c6d4e18ab3d_homeassistant no longer exists"
+  to the owner's phone. Home Assistant itself was fine.
+- **Why It Happened**: The design and its 32 tests modelled containers as
+  stable names that are either up, down or removed. Compose's transient
+  rename is not in that model, and the hermetic fake Docker could not
+  produce it. Separately, mutation testing that day showed two other tests
+  passing for the wrong reason: a restore test's corrupted SQLite file failed
+  on OPEN, so the `integrity_check` branch was never exercised, and a watcher
+  test only inspected the recovery message, not the outage alert.
+- **Solution**: Never track `^[0-9a-f]{12}_` names; and a container that was
+  already failing (not yet alerted) and then disappears is treated as
+  replaced/removed on purpose and forgotten quietly. A healthy container
+  that vanishes still alerts. Each guard got its own test (one replays the
+  exact incident), each mutation-checked, then the real operation was
+  repeated live and stayed silent. The restore test gained a database that
+  opens and reads fine but fails `pragma integrity_check` (index rewritten
+  via `writable_schema`).
+- **Preventive Rule**: Before trusting a new alerter, run the noisiest
+  routine operations the system will see (force-recreate, daemon restart,
+  update, backup) live while watching it, not only the failure you built it
+  for. For every guard in a monitor, delete it in a copy and make sure a
+  test fails; when one survives, the test is checking an easier failure than
+  the one the guard exists for. Every new watcher gets its own dead-man,
+  hosted in an existing watched job, not a new unwatched timer.
+- **Similar Situations**: Container/process monitors keyed on names (compose
+  temp names, Kubernetes pod name churn, systemd transient units); "file is
+  corrupt" tests that only produce unreadable files; health checks verified
+  only by their recovery path.
