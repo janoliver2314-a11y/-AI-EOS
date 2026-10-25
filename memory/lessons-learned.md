@@ -7045,3 +7045,33 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
 - **Similar Situations**: Any multi-agent pipeline with per-model or
   per-account quotas; long review loops; overnight or unattended plan
   execution where a rate limit can end a run mid-task.
+
+---
+
+### LL-0205 — A scheduled security audit that fails every day is no audit if nothing reads the result
+
+- **Root Cause**: A daily `npm audit` workflow on `main` had failed for at least three days on a critical Next.js advisory (remote code execution range). Nobody noticed until an unrelated dependency PR showed the same red check.
+- **Why It Happened**: Scheduled runs on the default branch notify no one by default, and the ops dashboard watched deploys, errors and email but not CI on `main`. A red badge in a tab nobody opens is silence.
+- **Solution**: Upgraded Next.js past the advisory range, re-ran the audit by `workflow_dispatch` to confirm green, and added a dashboard collector that reads the latest decisive run of the audit workflow through the GitHub API and pushes a red phone alert when it fails (cancelled/skipped runs ignored).
+- **Preventive Rule**: Every scheduled check must have a reader: route its failure to the same alert channel as production errors, or it does not count as a control. At session start, list the last scheduled runs on the default branch.
+- **Similar Situations**: Nightly backups, cron data syncs, certificate renewals, dependency audits, scheduled exports: anything that runs unattended and reports only by status color.
+
+---
+
+### LL-0206 — An empty environment override does not override when the settings loader ignores empty values
+
+- **Root Cause**: To point a local backend at a development auth instance, the run command set `CLERK_JWKS_URL=` and `CLERK_ISSUER=` (empty) to cancel production values from `.env`. Tokens kept failing with "unable to find a signing key".
+- **Why It Happened**: The pydantic-settings config used `env_ignore_empty=True`, so an empty environment variable is treated as absent and the `.env` value wins. The override looked applied in the shell but never reached the app.
+- **Solution**: Set the override to the real development values instead of empty strings; confirmed by printing the resolved settings from the same entry point before restarting the server.
+- **Preventive Rule**: To override a config value for a local run, set it to the intended value, never to empty, and verify the resolved setting in-process (not by echoing the shell variable).
+- **Similar Situations**: dotenv loaders with `override=False`, Docker `env_file` plus `environment:` precedence, Kubernetes ConfigMap vs Secret precedence, CLI flags that treat "" as unset.
+
+---
+
+### LL-0207 — A dashboard that renders a fixed source list silently drops a collector added outside that list
+
+- **Root Cause**: A new optional collector (only registered when a token exists) was deliberately kept out of the "known sources" list so it would not show as red before the token was added. The view builder rendered and ranked only known sources, so with the token present the collector stored data that never appeared and its red alert could never fire.
+- **Why It Happened**: Unit tests called the ranking function directly with a hand-built panel and checked that the source was absent from the known list. No test went through the real path from stored snapshot to rendered view to alert.
+- **Solution**: Added an explicit optional-sources list rendered only when a snapshot exists, passed by both the alert loop and the HTTP view, with tests at the view, alert-pass and app levels. Caught by an independent review before deploy.
+- **Preventive Rule**: For every new monitor, include one test that drives the full path (collector output stored, read back through the same entry point production uses, alert produced). A unit test of the rule alone proves the rule, not the wiring.
+- **Similar Situations**: Feature-flagged panels, plugin registries, alert rules keyed by name, metrics exported but never scraped, routes registered but not mounted.
