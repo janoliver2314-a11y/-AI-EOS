@@ -6956,3 +6956,92 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
   temp names, Kubernetes pod name churn, systemd transient units); "file is
   corrupt" tests that only produce unreadable files; health checks verified
   only by their recovery path.
+
+---
+
+### LL-0202 — An access gate read a best-effort side table while the routing code read the source of truth, so a dropped write could strand a real user or keep a stale one inside
+
+- **Root Cause**: A celebration page was gated on an `exam_attempts` history
+  table. That table was written best-effort after the real write (the student
+  profile row): its failures were caught and logged. The email redirect and
+  the dashboard link, which send people to the page, trusted the profile row.
+  One dropped database connection at the moment of the outcome write left the
+  profile saying "passed" with no history row, so every entry point sent the
+  student to a page that answered "Nothing here." and nothing ever repaired
+  it. The mirror case was worse: a "passed" changed to "not passed" whose
+  history write failed left the history saying "passed", so a non-passer kept
+  the celebration.
+- **Why It Happened**: Each task was correct against its own brief and passed
+  its own review. The mismatch only exists between two tasks, and only on the
+  failure path of a write that the codebase deliberately swallows. Tests
+  covered the happy path where both rows agree.
+- **Solution**: The gate overlays the source-of-truth row onto the history for
+  the one date the profile describes (profile wins for its own date; history
+  decides for older dates). Two tests pin the divergence in both directions.
+  Found by the whole-branch review, which was told to look for exactly this
+  kind of cross-task invariant.
+- **Preventive Rule**: A check that decides what a person may see must read the
+  same source of truth as the code that routes them to it. When two stores
+  hold one fact and one of them is written best-effort, name the
+  authoritative one in the design, derive the gate from it, and test the
+  divergence in both directions (record missing, record stale). A final
+  whole-branch review should list "writes that are swallowed" and ask what
+  reads them.
+- **Similar Situations**: Audit or history tables used for authorization;
+  denormalized flags and counters; caches and search indexes consulted for
+  permission decisions; feature switches mirrored into a second system;
+  anything where a `try/except: log` follows the primary write.
+
+---
+
+### LL-0203 — A migration that is "additive" still breaks every request if a hot write path starts sending the new column
+
+- **Root Cause**: A feature added a nullable `referred_by` column to the public
+  signup table, and the signup upsert began sending that key on every request
+  (null for ordinary signups). Merging before applying the migration to the
+  production database would have made every signup fail, not just referred
+  ones. The same release also made the nightly backup export select a new
+  table, so a server checkout updated before the table existed would have
+  failed the export.
+- **Why It Happened**: "Additive and nullable" reads as safe for old code, but
+  the safe direction is the other way round: it is the new code that needs
+  the column. Two deploy targets (web hosting on merge, a separate server
+  checkout for the exporter) each had their own ordering constraint.
+- **Solution**: Order written into the PR body and followed: apply the
+  migration to production, verify the table, columns, security setting and
+  the widened constraint by query, then merge, verify both deployments by
+  commit SHA, and only then update the server checkout. The reviewer
+  flagged it as the one Critical item and a process gate rather than a code
+  defect.
+- **Preventive Rule**: If a change adds a field to an existing hot write (even
+  as null) or a new table to a scheduled reader, the migration is a hard
+  precondition of the deploy. Put the order in the PR description, apply and
+  verify before merging, and never let the merge trigger the deploy first.
+- **Similar Situations**: ORM models gaining a column; upserts and bulk
+  inserts that name columns explicitly; CHECK constraints that gain an allowed
+  value the code starts using; exporters, backups and dashboards that read
+  tables by name from a separately deployed checkout.
+
+---
+
+### LL-0204 — A model usage limit hit at the start of the last task of a subagent-driven plan: pass the model explicitly and check for partial work before re-dispatching
+
+- **Root Cause**: The implementer for the final task failed immediately with a
+  usage-limit error on the premium model that every earlier task had used.
+  No work had been done, but that was only known after checking.
+- **Why It Happened**: Every dispatch pinned the same model with no planned
+  fallback, and a plan with many tasks and per-task reviews spends that quota
+  quickly.
+- **Solution**: Confirmed the working tree was clean and the last commit was
+  unchanged (no partial edits to inherit), recorded the switch to a
+  fallback model as a ruling in the plan's ledger, and re-dispatched the same
+  brief. All remaining implementers and reviewers ran on the fallback with no
+  loss of quality in the review results.
+- **Preventive Rule**: Always pass the model explicitly on every dispatch (an
+  omitted model silently inherits the most expensive one). Before
+  re-dispatching after any failed agent, run `git status` and look at the
+  last commit so a half-finished task is never built on or redone blindly.
+  Decide the fallback model up front and note the switch in the ledger.
+- **Similar Situations**: Any multi-agent pipeline with per-model or
+  per-account quotas; long review loops; overnight or unattended plan
+  execution where a rate limit can end a run mid-task.
