@@ -7125,3 +7125,23 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
 - **Solution**: Brace the variable: `"${commit}:refs/heads/pr-assets/x"`.
 - **Preventive Rule**: In zsh, always write `${var}` when a colon follows a variable (refspecs, `host:port`, `user:group`, `key:value`).
 - **Similar Situations**: `scp "$host:path"`, `chown "$user:$group"`, `docker run -p "$port:80"`, `"$image:latest"` (`:l` lowercases).
+
+---
+
+### LL-0213 — A rule drawn from past defects can fail most of the approved corpus
+
+- **Root Cause**: An audit of past item defects proposed a hard validator error for "a plain-language summary keeps a number but drops its unit" (it found 7 cases in recent auto-drafted items). Run over the whole approved bank, the same rule flagged 124 items, nearly all reviewed and published by the domain expert, many of them fine ("breathing 16 times a minute").
+- **Why It Happened**: The rule was written from the defect list alone. The approved corpus, which shows what the reviewer actually accepts, was never measured.
+- **Solution**: Kept it as an instruction to the drafter, not a hard error that would have silently dropped good drafts.
+- **Preventive Rule**: Before turning a lesson into a hard check, run it over everything already approved. If it fails approved work at a real rate, it is guidance or a warning, not a gate.
+- **Similar Situations**: New lint rules on a legacy codebase, stricter schema validation on existing records, content-policy filters, CI gates added after an incident.
+
+---
+
+### LL-0214 — Feeding a similarity check more text can lose catches it used to make
+
+- **Root Cause**: A Jaccard near-duplicate check compared only stem text for some item types. Adding their answer text made it catch a new class of duplicate (0% → 20–28%), yet a re-run on the previous day's real drops showed one draft it had caught at 0.33 now scored 0.24 and would pass.
+- **Why It Happened**: Jaccard divides by the union. More tokens per item raise the union faster than the overlap unless the added text is shared, so scores fall across the board; bank-wide pair counts went down, not up.
+- **Solution**: Before deploying, re-scored the last real drops with old and new code, and simulated the target case (same answers, new scenario) against honest same-topic siblings. The lost catch was read by hand and judged a different question, so the change shipped.
+- **Preventive Rule**: When you change what a similarity check compares, re-run it against the last real positives and against a constructed version of the case you are adding. Measure both catch and false-positive rates; do not infer from aggregate counts.
+- **Similar Situations**: Plagiarism or dedupe thresholds, embedding-based search after adding fields to the embedded text, spam scores after adding features, fuzzy record matching.
