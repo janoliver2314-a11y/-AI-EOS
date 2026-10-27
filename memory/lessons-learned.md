@@ -7095,3 +7095,33 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
 - **Solution**: The decide step ignores messages older than a fixed go-live timestamp. The first live runs were checked for zero state changes before anyone relied on the alerts.
 - **Preventive Rule**: Every new event watcher (mail, webhooks, feeds) needs a baseline: a go-live cutoff or a seeded "seen" marker. Verify that the first live run changes nothing.
 - **Similar Situations**: New RSS or feed alerters, CI notifiers on old builds, sync jobs that backfill history, inbox triage rules applied to an existing inbox.
+
+---
+
+### LL-0210 — A symlinked dependency folder passes lint, types and tests, then fails the production build
+
+- **Root Cause**: In a git worktree, `node_modules` was symlinked from the main checkout to skip a reinstall. Lint, `tsc` and 897 vitest tests passed; `next build` failed because Turbopack resolves the symlink to its real path and refuses to compile files outside the workspace root.
+- **Why It Happened**: Only the bundler enforces a root. The test runner and type checker follow symlinks without complaint, so the shortcut looked safe until the last step.
+- **Solution**: Replaced the symlink with a real `npm ci` in the worktree, then built. Symlinking the virtualenv and `.env` files stayed fine.
+- **Preventive Rule**: In a worktree, install JavaScript dependencies for real before anything that bundles. If you take a shortcut, run the build early, not last.
+- **Similar Situations**: pnpm/yarn workspace links, Docker build contexts that exclude symlink targets, Vite or webpack `resolve.symlinks`, monorepo packages linked with `npm link`.
+
+---
+
+### LL-0211 — Headless Chrome's `--screenshot` writes the image but never exits against a dev server
+
+- **Root Cause**: Capturing PR screenshots with `chrome --headless=new --screenshot` from a local Next.js dev server hung indefinitely; with `--virtual-time-budget` it hung before writing anything.
+- **Why It Happened**: The dev server keeps a hot-reload WebSocket open, so the page never goes idle and Chrome never decides it is done. macOS has no `timeout` command to cut it off.
+- **Solution**: `perl -e 'alarm 25; exec @ARGV' chrome --headless=new --screenshot=out.png --window-size=900,<height> <url>`, then `pkill -f headless=new`. The PNG is written within seconds; the alarm only ends the process.
+- **Preventive Rule**: Wrap every headless-browser capture in a hard time limit, and check that the output file exists rather than relying on the exit status.
+- **Similar Situations**: Puppeteer/Playwright waiting for `networkidle` on pages with long-poll or SSE, PDF printing of live dashboards, screenshot jobs in CI against `next dev`.
+
+---
+
+### LL-0212 — In zsh, `"$sha:refs/heads/x"` is not a refspec: `:r` is a history modifier
+
+- **Root Cause**: `git push origin "$commit:refs/heads/pr-assets/x"` failed with "src refspec <sha>efs/heads/... does not match any". zsh read `:r` as the "remove extension" modifier on `$commit` and dropped the `:r`.
+- **Why It Happened**: zsh applies history-style modifiers (`:r`, `:h`, `:t`, `:e`, `:l`, `:u`, ...) to a bare `$var` followed by a colon, even inside double quotes. Bash does not, so the same line works there.
+- **Solution**: Brace the variable: `"${commit}:refs/heads/pr-assets/x"`.
+- **Preventive Rule**: In zsh, always write `${var}` when a colon follows a variable (refspecs, `host:port`, `user:group`, `key:value`).
+- **Similar Situations**: `scp "$host:path"`, `chown "$user:$group"`, `docker run -p "$port:80"`, `"$image:latest"` (`:l` lowercases).
