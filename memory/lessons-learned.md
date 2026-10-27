@@ -7075,3 +7075,23 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
 - **Solution**: Added an explicit optional-sources list rendered only when a snapshot exists, passed by both the alert loop and the HTTP view, with tests at the view, alert-pass and app levels. Caught by an independent review before deploy.
 - **Preventive Rule**: For every new monitor, include one test that drives the full path (collector output stored, read back through the same entry point production uses, alert produced). A unit test of the rule alone proves the rule, not the wiring.
 - **Similar Situations**: Feature-flagged panels, plugin registries, alert rules keyed by name, metrics exported but never scraped, routes registered but not mounted.
+
+---
+
+### LL-0208 — The n8n MCP workflow SDK rejects helper functions, so repeated nodes need a generator
+
+- **Root Cause**: A workflow with seven similar data-table update nodes was written with small builder functions (arrow functions, `Object.fromEntries`, template literals). `validate_workflow` refused it: the SDK parser accepts only literal `node({...})` / `trigger({...})` calls.
+- **Why It Happened**: The SDK file looks like ordinary TypeScript, but it is parsed statically, not executed. Normal code reuse is unavailable inside it.
+- **Solution**: A short Python generator writes the fully expanded SDK file from the Code-node `.js` sources. The workflow was created with stub Code nodes, then the real sources were loaded with `update_workflow` `setNodeParameter /jsCode`, so the large code goes through the tool call once.
+- **Preventive Rule**: For n8n SDK workflows, keep the SDK file free of functions. Generate repetition outside it, and keep Code-node logic in separate `.js` files with their own unit tests.
+- **Similar Situations**: Any declarative config that is parsed rather than run (CI YAML anchors, Terraform without modules, low-code JSON exports).
+
+---
+
+### LL-0209 — A new mailbox watcher flags old, already-handled mail on its first run
+
+- **Root Cause**: A watcher that marks "the contact wrote last and we have not seen this message" would, on its first run, have flagged a weeks-old form confirmation as a new reply needing an answer.
+- **Why It Happened**: Its "already seen" memory starts empty, so everything already in the mailbox looks new.
+- **Solution**: The decide step ignores messages older than a fixed go-live timestamp. The first live runs were checked for zero state changes before anyone relied on the alerts.
+- **Preventive Rule**: Every new event watcher (mail, webhooks, feeds) needs a baseline: a go-live cutoff or a seeded "seen" marker. Verify that the first live run changes nothing.
+- **Similar Situations**: New RSS or feed alerters, CI notifiers on old builds, sync jobs that backfill history, inbox triage rules applied to an existing inbox.
