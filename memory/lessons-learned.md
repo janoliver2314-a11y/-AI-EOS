@@ -7145,3 +7145,13 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
 - **Solution**: Before deploying, re-scored the last real drops with old and new code, and simulated the target case (same answers, new scenario) against honest same-topic siblings. The lost catch was read by hand and judged a different question, so the change shipped.
 - **Preventive Rule**: When you change what a similarity check compares, re-run it against the last real positives and against a constructed version of the case you are adding. Measure both catch and false-positive rates; do not infer from aggregate counts.
 - **Similar Situations**: Plagiarism or dedupe thresholds, embedding-based search after adding fields to the embedded text, spam scores after adding features, fuzzy record matching.
+
+---
+
+### LL-0215 — An email address printed on a firm's own website can sit on a domain that has no mail server
+
+- **Root Cause**: Two cold emails (LNC outreach, 2026-10-27) went to `info@` addresses copied verbatim from the firms' own contact pages. Neither domain had an MX record; the website was on Vercel / a website builder that does not accept SMTP. Gmail fell back to the domain's A record, timed out, and sent "Delivery Status Notification (Delay)" notices, retrying for two days before a hard bounce.
+- **Why It Happened**: Discovery validated format, source and duplicates, not deliverability. "Copied from the firm's own site" was treated as proof the address works; the firm had simply never set up email on its new domain (its old domain still had mail).
+- **Solution**: Before an address enters the outreach list (and before a manual send), look up the domain's MX record: no MX, a null MX (`0 .`) or NXDOMAIN means drop it. A failed lookup keeps the address, so a DNS blip never discards a good lead. Server side via `dig +short MX`; browser side via DNS-over-HTTPS (`cloudflare-dns.com/dns-query?type=MX`, `Accept: application/dns-json`).
+- **Preventive Rule**: Any pipeline that collects email addresses for sending checks MX at intake, not after the bounce. Treat "the delay notice" (4.4.1, "recipient server did not accept our requests to connect") as a no-MX signal and check DNS before waiting out the retry window.
+- **Similar Situations**: Contact-form scrapes, CRM imports, Hunter/Apollo exports, firms that rebranded to a new domain, any `info@` on a site-builder domain.
