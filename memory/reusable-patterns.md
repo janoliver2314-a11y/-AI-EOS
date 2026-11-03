@@ -688,3 +688,24 @@ each job folder next to the scripts.
 recovers the two common dead ends (the page fetcher is blocked; the link is a viewer, not
 the file) without widening the allowlist. Test it on the real site from the host that runs
 the agent, since blocking depends on the requesting IP and client.
+
+## Pattern: Transcribe a policy document as a table whose tests are the document's own cross-checks
+
+**Used in**: Task Command `src/lib/holidays.js` + `test/holidays.mjs` (2026-11-03), from USNHNAP
+Policy Memo 26-002 (FY27 holiday observance).
+
+**Shape**: A dated policy (holiday schedule, duty roster, fee table) goes into the app as a plain
+data module, never an algorithm — the issuing office decides the dates each year, so next year is
+a new table from the next memo, not a rule change. Store it in the app's existing scalar formats
+(here YYYY-MM-DD strings compared as strings) so every consumer reads one table. Then write the
+tests from the document's *redundancy*, not from the table: a memo that prints "Thu, 26 Nov" lets
+a test assert the stored date falls on a Thursday; a liberty window "26-29 Nov or 28-30 Nov" lets
+a test assert the flex days sit inside the long weekend and never on the holiday itself; a fiscal
+year lets a test assert every row is inside it. Those checks caught two typos in the memo itself
+(a flex day printed as the holiday; a June window printed as July). Correct such cells in the
+table, say so in a comment beside the row, and pin the corrected value in a test with the reason.
+
+**When to use**: any time a PDF, memo or spreadsheet from an authority is being typed into code.
+Transcription errors are silent and the document usually carries enough internal structure
+(weekday names, ranges, totals, hours) to check itself. Keep the table pure (no framework
+imports) so the calendar, the row chip, the server-rendered email and the tests all read it.
