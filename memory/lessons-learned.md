@@ -7211,3 +7211,27 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
 - **Solution**: Added the reverse check, which lists source numbers missing from the output and shows them to the user. Rewrote the prompt to say results must be kept, to add nothing, and to include one worked example. The same three facts then came back with every figure intact and neither check fired.
 - **Preventive Rule**: For any feature that transforms text with a model, check both directions: what was added and what was lost. Run it at least once against the real model on realistic input before calling it done. Fake models test plumbing, not behavior.
 - **Similar Situations**: Summaries of clinical or legal documents, meeting notes, resume bullets, ticket triage, translation, and any rewrite where numbers, names, dates, or negations must survive.
+
+### LL-0223 — Pushing a model toward a stronger draft makes it invent benefits that number checks cannot see
+
+- **Root Cause**: A prompt that turned log notes into FITREP bullets was changed to aim for the strongest honest report, with a length target. The real model's first pass then added clauses no note stated, such as "freeing funds for other needs" and "making patient records more accurate". The prompt already said "no outcome". Both number checks from LL-0222 stayed silent, because the invented clauses held no numbers.
+- **Why It Happened**: Asking for impact and length pulls a model toward supplying the "so what", and that goal outweighed the older rule. The checks only compared numbers, and a fake model could never show this failure.
+- **Solution**: Named the failure in the prompt with examples, and added a second call that checks each line against the facts and rewrites it. The app keeps the first draft if the rewrite adds or loses a number. The second pass removed every invented clause in that run, and two later real runs added none. A person still reads every draft.
+- **Preventive Rule**: After any prompt change that asks for more quality or length, read real output line by line for claims the source does not state. Number checks only catch numbers, so unstated claims need a separate pass and a human read.
+- **Similar Situations**: Performance reports, resume bullets, grant narratives, clinical summaries, marketing copy, and any model writing where every claim must be verifiable.
+
+### LL-0224 — Excel stores 98% as 0.98, so hand-built test files passed while a real file read wrong
+
+- **Root Cause**: A browser importer that totals spreadsheet columns showed a percent column as "0.97 average". The cell holds 0.97, and the percent sign comes from the cell's number format, which is stored apart from the value. Every hand-built test file held whole percents or a literal % sign, so all tests passed.
+- **Why It Happened**: This is LL-0139 in a new form: the fixtures came from the same belief as the code. What a spreadsheet shows and what it stores are different things, and only a file written by a real tool carried that difference.
+- **Solution**: When the header says percent and every value is 1 or less, the importer scales it to a percent. A plain "rate" header is left alone, because it may not be a percent. Files from openpyxl and LibreOffice were then run through the parser.
+- **Preventive Rule**: Run a parser on at least one file made by the real tool before trusting it, and treat display formatting as separate from stored values. Where the real tool is not available, say so plainly.
+- **Similar Situations**: Dates stored as serial numbers, currency and thousands formatting, hidden rows and sheets, and cached formula results.
+
+### LL-0225 — A model can file true facts in the wrong category, and no fact check will notice
+
+- **Root Cause**: Asked to fill the empty sections of a form, the real model invented nothing, but it put "mentored 3 junior officers through their qualification" under the member's own qualifications. It also copied a completed course into the off-duty courses section. Each statement was true, and the section gave it a false meaning.
+- **Why It Happened**: The prompt allowed reusing a line where it "truly belongs" and treated section titles as simple labels. "No invented facts" and the number checks both passed, because neither looks at where a fact lands.
+- **Solution**: Limited record sections to what the person personally earned, received, or attended, stated that helping someone else earn a qualification is leadership, and forbade reusing lines already on the form. Two more real runs placed the same facts correctly.
+- **Preventive Rule**: When a model sorts facts into fields, read where they land as well as whether they are true. Include a test fact that looks like it belongs in the wrong field.
+- **Similar Situations**: Resume sections, clinical note fields, expense categories, ticket routing, and any form where the field gives a fact its meaning.
