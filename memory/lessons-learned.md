@@ -7235,3 +7235,19 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
 - **Solution**: Limited record sections to what the person personally earned, received, or attended, stated that helping someone else earn a qualification is leadership, and forbade reusing lines already on the form. Two more real runs placed the same facts correctly.
 - **Preventive Rule**: When a model sorts facts into fields, read where they land as well as whether they are true. Include a test fact that looks like it belongs in the wrong field.
 - **Similar Situations**: Resume sections, clinical note fields, expense categories, ticket routing, and any form where the field gives a fact its meaning.
+
+### LL-0226 — A local AI model that fits in RAM can still be unusable, because agents pay for prompt reading
+
+- **Root Cause**: Local model plans for a CPU-only server were judged on model size, RAM and writing speed. On the real box, an 8B model read prompts at 31 tokens per second, so an agent framework's enforced 64K context would take about 35 minutes to read once.
+- **Why It Happened**: Model pages advertise parameters and context, and writing speed is the number people quote. Agents resend large system prompts, tool schemas and history, so reading speed sets the wait. An estimate from memory bandwidth also came in above the measured writing speed (8-10 against 5.4 tokens per second).
+- **Solution**: Timed one real prompt per installed model through the Ollama API, read `prompt_eval` and `eval` figures from the response, and calculated the time to read each context size before choosing an architecture.
+- **Preventive Rule**: Before planning local agents, measure prompt-reading speed on the target machine and divide the agent's required context by it. Treat published or estimated speeds as leads until measured there.
+- **Similar Situations**: RAG with long retrieved context, long-document summaries on CPU, hardware purchases compared on writing speed alone, and any agent framework with a minimum context.
+
+### LL-0227 — A "read-only" Docker socket proxy still exposes secrets through container inspect
+
+- **Root Cause**: A socket proxy set to `CONTAINERS=1 POST=0` blocks changes, so it looked safe to reuse for an AI agent that only reads status. The same setting allows `GET /containers/{id}/json`, which returns each container's environment variables, where many services keep passwords and tokens.
+- **Why It Happened**: "Read-only" describes whether state can change, not whether what can be read is sensitive. The proxy was built for a trusted dashboard, and the risk changes when the reader is a model taking in untrusted log text.
+- **Solution**: Designed agent access as a fixed host-side collector that runs named read commands and redacts secrets, with no proxy or socket reachable by the agent.
+- **Preventive Rule**: Before giving any automated reader a Docker API, list what each allowed endpoint returns, not only whether it can write. Give agents fixed, redacted outputs. Membership in the `docker` group counts as root access.
+- **Similar Situations**: Kubernetes read roles that include Secrets, monitoring tools with API tokens, log access that contains credentials, and database read-only users that can see token tables.
