@@ -7251,3 +7251,35 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
 - **Solution**: Designed agent access as a fixed host-side collector that runs named read commands and redacts secrets, with no proxy or socket reachable by the agent.
 - **Preventive Rule**: Before giving any automated reader a Docker API, list what each allowed endpoint returns, not only whether it can write. Give agents fixed, redacted outputs. Membership in the `docker` group counts as root access.
 - **Similar Situations**: Kubernetes read roles that include Secrets, monitoring tools with API tokens, log access that contains credentials, and database read-only users that can see token tables.
+
+### LL-0228 — Ollama in a container plans memory from the host's RAM, not the container limit
+
+- **Root Cause**: The Ollama container ran with a 24 GB `mem_limit` on a 46 GB host. During a model benchmark it loaded two models at once (about 22 GB plus working memory), and the kernel killed `llama-server` for running out of memory twice.
+- **Why It Happened**: Ollama decides how many models fit by reading total system memory, which is the host's RAM. The cgroup limit only appears when the kernel enforces it, so Ollama's own check said everything fit.
+- **Solution**: Set `OLLAMA_MAX_LOADED_MODELS: "2"` and raised `mem_limit` to 30 GB, so the largest pair that can load fits under the limit with headroom.
+- **Preventive Rule**: When an inference server runs under a container memory limit, cap how many models it may load at once and size the limit for the largest models that can be resident together. Don't rely on the server's own free-memory check.
+- **Similar Situations**: JVMs and Node processes that size heaps from host RAM, database buffer pools in containers, and any service that auto-tunes from `/proc/meminfo`.
+
+### LL-0229 — After a CMOS battery reset, the server boots with an old clock and services start on the wrong date
+
+- **Root Cause**: A home server that hard-froze would not start again until a RAM stick was reseated and the CMOS battery removed. On the next boot the clock read the BIOS default (seven weeks earlier) until NTP corrected it, so every container recorded a start date seven weeks back and the boot logs are dated wrong.
+- **Why It Happened**: A CMOS reset clears the real-time clock as well as the BIOS settings. Containers set to `restart: unless-stopped` start before NTP syncs, so a scheduler that works out its next run at startup may do it from the wrong date. The same reset also returned "After Power Loss" to its default, which quietly breaks recovery by power-cycling a smart plug.
+- **Solution**: Checked `timedatectl` (synchronized), then let the planned Docker engine upgrade restart every container after the clock was correct. Logged "After Power Loss = On" as an open step to redo in the BIOS by hand.
+- **Preventive Rule**: After any CMOS or battery reset, confirm the clock has synced, restart services that keep schedules once it has, and re-check the BIOS settings that recovery depends on (power-loss behaviour, boot order, watchdog).
+- **Similar Situations**: A dead CMOS battery, BIOS updates that reset settings, cloned VMs started without time sync, and devices with no battery-backed clock, such as a Raspberry Pi.
+
+### LL-0230 — A VPN container can report "healthy" while its tunnel carries no traffic
+
+- **Root Cause**: Two gluetun containers using the same ExpressVPN server lost all traffic through the tunnel at 02:17 UTC. The OpenVPN handshake and login still succeeded, so gluetun reconnected more than 1,000 times without ever passing a packet. Restarting the containers reconnected to the same dead server.
+- **Why It Happened**: The fault was on the provider's server, not in the container or the host's internet. Docker briefly marked both containers "healthy" right after the restart, before gluetun's first in-tunnel check failed, so a watcher sent a false "recovered" alert.
+- **Solution**: Confirmed the host's internet worked, then proved the tunnel was dead by testing from inside it (DNS and a raw-IP fetch both timed out). ExpressVPN location files differ only in their `remote` lines, so resolved another city's hostname and replaced the IPs in both configs (gluetun's custom provider needs IPs). Verified with `cloudflare.com/cdn-cgi/trace` from inside the tunnel, since ipinfo.io returns 403 to VPN addresses.
+- **Preventive Rule**: Judge a VPN container by traffic through the tunnel, not by its Docker health status or a successful handshake. When reconnects keep failing on the same endpoint, change the endpoint instead of restarting again. Keep the IPs of a second location on record.
+- **Similar Situations**: WireGuard peers that handshake but don't route, load balancers marking a backend healthy on TCP connect alone, and health checks that pass during a startup grace period.
+
+### LL-0231 — Dedupe state keyed on file path breaks when your own pipeline moves the file
+
+- **Root Cause**: A nightly inbox collector marked files as seen with a hash of `path|size|mtime`. When a user approved a suggestion, the applier renamed the file, giving it a new path, so the next morning the collector reported it as new. Approving it again renamed it again (`PendingInsights2` → `2-1` → `2-1-1`), an endless daily loop.
+- **Why It Happened**: The collector and the applier were written separately, and the seen key encoded the one property the applier changes.
+- **Solution**: After each move the applier writes the new path's key (same formula) to the seen file, so the file stays known under its new name. A test now covers rename, collision suffix, and "edited after filing is reported again".
+- **Preventive Rule**: When a pipeline both detects and acts on items, any action that changes an item's identity key must update the dedupe state in the same step. Better still, key on something the action doesn't change, such as a content hash or an inode.
+- **Similar Situations**: Download folders watched by a renamer, mail rules that move messages a scanner later reprocesses, S3 keys rewritten by a processing job, and "already imported" lists keyed on filename.
