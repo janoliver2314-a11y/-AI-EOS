@@ -7283,3 +7283,35 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
 - **Solution**: After each move the applier writes the new path's key (same formula) to the seen file, so the file stays known under its new name. A test now covers rename, collision suffix, and "edited after filing is reported again".
 - **Preventive Rule**: When a pipeline both detects and acts on items, any action that changes an item's identity key must update the dedupe state in the same step. Better still, key on something the action doesn't change, such as a content hash or an inode.
 - **Similar Situations**: Download folders watched by a renamer, mail rules that move messages a scanner later reprocesses, S3 keys rewritten by a processing job, and "already imported" lists keyed on filename.
+
+### LL-0232 — Claude Code pointed at a local model silently inherits the project's "allow without asking" list
+
+- **Root Cause**: A wrapper ran Claude Code against a local Ollama model in "ask before everything" mode, but it was started inside a folder whose `.claude/settings.local.json` held months of approved rules (`Bash(ssh elitedesk *)`, `git push *`, `docker exec *`). The local agent ran an ssh command on the server without asking.
+- **Why It Happened**: Project and local settings files load no matter which model or config directory is used. `--bare` and a separate `CLAUDE_CONFIG_DIR` don't stop them.
+- **Solution**: Start the wrapper with `--setting-sources user`, plus its own `--settings` file holding the deny list. Verified: the same ssh command then needed approval.
+- **Preventive Rule**: Any second agent or wrapper must pin its setting sources explicitly, then be tested with a command the parent project already allows.
+- **Similar Situations**: CI runners started in a dev checkout, sub-agents launched from a repo root, sandboxes that mount the user's home folder.
+
+### LL-0233 — Claude Code asks every backend for "high effort", and a local reasoning model then thinks for minutes without acting
+
+- **Root Cause**: By default Claude Code sends `output_config.effort: "high"` plus adaptive thinking (seen by pointing it at a fake endpoint). gpt-oss:20b through Ollama took that as maximum reasoning: 9,000+ thinking tokens over 6+ minutes and not one tool call, on a one-command step.
+- **Why It Happened**: The default is tuned for Claude models. Nothing warns that a local model handles "high" very differently.
+- **Solution**: Pass `--effort medium`. The same step then took 9 s and chose the right command; `low` took 5 s but didn't act. Also set `CLAUDE_CODE_MAX_CONTEXT_TOKENS` to the model's real window (64K), or auto-compact assumes 200K and the backend silently truncates.
+- **Preventive Rule**: Before using any third-party model behind an agent harness, capture one real request and check the effort, thinking and context-window settings it sends.
+- **Similar Situations**: Other OpenAI- or Anthropic-compatible proxies (vLLM, LM Studio, LiteLLM), and any harness default written for a hosted model.
+
+### LL-0234 — Auto mode with a local model jams, because the safety classifier queues behind the agent on the same single-slot server
+
+- **Root Cause**: In auto mode Claude Code asks a classifier model whether each command is safe. With every model alias mapped to the one local Ollama model, which serves one request at a time, each check waited behind the agent's own generation and timed out after about 60 s. Commands retried 3 to 5 times; one 12-minute run moved nothing.
+- **Why It Happened**: The classifier and the agent share one backend, and the backend can't run two requests at once.
+- **Solution**: Use manual approval with local models, where the human is the faster and better judge. A classifier that is the same small model as the agent adds little safety anyway.
+- **Preventive Rule**: Never route a safety check to the same weak, single-slot model whose actions it is supposed to check.
+- **Similar Situations**: Self-grading pipelines, LLM-as-judge on the same model as the generator, and any "verifier" that shares a rate limit with the worker.
+
+### LL-0235 — A small local agent fakes success, rewrites commands it was told to copy exactly, and misreads documentation it looked up
+
+- **Root Cause**: gpt-oss:20b used as a coding and ops agent (2026-11-12, about 10 tests): it printed a "Done ✅" checklist for an import list before running any command; it miscounted containers (35 vs 29); it invented menu paths and settings; given exact steps, it escaped every quote in two commands (`-H \"X-Api-Key: $k\"`), which broke them silently, then added its own step and carried on; and it fetched Sonarr's real schema but picked the wrong list type from it.
+- **Why It Happened**: Model capacity. Rules fixed its habits (look things up, ask first, stop after two failures, no direct database access) but not its understanding or its urge to "fix" quoting.
+- **Solution**: Keep it on read-only work and small, guided changes, in manual mode. Give it memory as a fact sheet checked by Claude. Make it look things up from the app itself (`/api/v3/<thing>/schema`, OpenAPI files). Have a separate, stronger checker verify every claimed result against real state.
+- **Preventive Rule**: Never accept a small model's "done" without an independent check of the actual state. When handing it commands, avoid nested quoting: put payloads in files and logic in scripts so there is nothing to "improve".
+- **Similar Situations**: Any local or cheap model run as an autonomous agent, and generated runbooks that contain shell quoting.
