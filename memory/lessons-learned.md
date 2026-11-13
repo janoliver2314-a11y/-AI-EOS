@@ -7315,3 +7315,27 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
 - **Solution**: Keep it on read-only work and small, guided changes, in manual mode. Give it memory as a fact sheet checked by Claude. Make it look things up from the app itself (`/api/v3/<thing>/schema`, OpenAPI files). Have a separate, stronger checker verify every claimed result against real state.
 - **Preventive Rule**: Never accept a small model's "done" without an independent check of the actual state. When handing it commands, avoid nested quoting: put payloads in files and logic in scripts so there is nothing to "improve".
 - **Similar Situations**: Any local or cheap model run as an autonomous agent, and generated runbooks that contain shell quoting.
+
+### LL-0236 — An anime metadata provider listed first in a general TV library renames real shows after anime with similar titles
+
+- **Root Cause**: Jellyfin's Shows library had the AniList plugin first in its metadata and image fetcher order. The live-action series *The Chosen* was matched by name to a Chinese anime called *The Chosen One*, so it showed that show's poster, description and cast. Seerr showed the right show because it looks titles up on TMDB itself.
+- **Why It Happened**: Jellyfin asks providers in order and takes the first name match. AniList only knows anime, so for a non-anime title it returns the closest anime name and nothing ranks it lower. The plugin had been switched on for every TV library, not just Anime.
+- **Solution**: Removed AniList from the Shows library's metadata and image fetchers (kept it in Anime), re-identified the item with `POST /Items/RemoteSearch/Series` then `POST /Items/RemoteSearch/Apply/{id}` on TMDB 85077, and ran a full refresh that replaces all metadata and images. Saved the old library options first.
+- **Preventive Rule**: Enable niche metadata providers only in the libraries they cover, and put the general provider (TMDB/TVDB) first everywhere else. When one app shows a title correctly and another doesn't, compare which provider each one used before editing the item by hand.
+- **Similar Situations**: MusicBrainz versus Discogs ordering in music libraries, Plex agents set per library, book apps matching audiobooks to the wrong edition, and any "first match wins" provider chain.
+
+### LL-0237 — Seerr ignores some fields when a settings section is posted back whole, but saves them in a partial body
+
+- **Root Cause**: Setting Seerr's Jellyfin `externalHostname` by reading `GET /api/v1/settings/jellyfin`, changing the field and posting the whole object back returned success, but the field stayed empty. Posting a body with only `externalHostname` saved it.
+- **Why It Happened**: The settings endpoint doesn't treat a full round-trip body as a plain overwrite. Some fields it returns are derived or handled separately, and the response gives no sign that the change was dropped.
+- **Solution**: Sent the minimal partial body for each change, then read the section back and compared every field changed. Library syncing likewise needed its own endpoint (`POST /settings/jellyfin/library/sync`), because `?sync=true` was rejected.
+- **Preventive Rule**: After any settings write through an app's API, read the setting back and check it changed. A 200 response only means the request was accepted. Prefer partial bodies with only the fields you mean to change.
+- **Similar Situations**: The Overseerr and Jellyseerr APIs Seerr comes from, *arr settings endpoints, PATCH-versus-PUT confusion in REST APIs, and admin APIs that skip read-only or computed fields without an error.
+
+### LL-0238 — A Jellyfin plugin's API can hang after its first configuration until the server restarts, and an API key gets 403 there instead
+
+- **Root Cause**: The Home Screen Sections plugin ships disabled with an empty section list. After its config was saved through the API (enabled, 16 sections), `GET /HomeScreen/Sections` hung for more than 15 s and the home page showed no rows. After `docker restart jellyfin` the same call answered in 17–86 ms.
+- **Why It Happened**: The plugin builds its section registry when Jellyfin starts. Enabling it at runtime left the endpoint waiting on state that hadn't been built. A second trap made it look worse: calls with a server API key return 403 on these endpoints, because they need a user's token. That is a separate fault from the hang.
+- **Solution**: Restarted Jellyfin after the first plugin configuration, then tested with a user token. Also set each section's lower limit to 0 so rows with few items still show.
+- **Preventive Rule**: After installing or first configuring a Jellyfin plugin that adds UI or endpoints, restart the server before judging whether it works. When testing plugin endpoints, use the auth they expect (a user token versus an API key), so a 403 isn't mistaken for a bug, or a bug for a 403.
+- **Similar Situations**: Home Assistant integrations that need a restart after YAML edits, Grafana plugins, *arr custom formats cached at startup, and any plugin that registers routes or caches only during startup.
