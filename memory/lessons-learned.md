@@ -7347,3 +7347,43 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
 - **Solution**: Removed the env override and both hooks from `~/.claude/settings.json` (backup `settings.json.bak-20261116-headroom`), disabled the `headroom@headroom-marketplace` plugin, and stopped the runner and proxy. The program stays installed via pipx for possible terminal use later.
 - **Preventive Rule**: Put any env var a hook or tool needs into the hook command itself or into `settings.json` `env`, never only into a shell rc file. After wiring in any proxy or middleware, confirm traffic actually passes through it (request counters or logs) in every client you use, not just the one you tested. Treat a recurring hook timeout as a symptom to diagnose, not noise.
 - **Similar Situations**: LaunchAgents and cron jobs that miss shell-rc env vars, IDE extensions that ignore `HTTPS_PROXY`, MCP servers launched by GUI apps without the user's PATH, and any "starts on demand" helper that fails silently in a loop.
+
+### LL-0240 — A `pgrep -f` wait loop matched its own launcher shell and waited three hours for a job that had already finished
+
+- **Root Cause**: Follow-up scripts on the Dell waited with `while pgrep -f "run.py results/2026-11-17" ...; do sleep 60; done`. The benchmark had ended, but the `bash -c '... run.py results/2026-11-17 ...'` shells that launched it were still alive, and their command lines contain the same text. `pgrep -f` kept matching them, so the next stage never started.
+- **Why It Happened**: `pgrep -f` matches the full command line of every process, including the shell or ssh wrapper that started the job, the watcher itself, and any shell whose arguments quote the pattern.
+- **Solution**: Killed the lingering launchers and switched every wait to a pidfile: the job writes `$!` to a file, and the waiter loops on `kill -0 "$(cat job.pid)"`.
+- **Preventive Rule**: Never wait on `pgrep -f <text>`. Use a pidfile plus `kill -0`, `wait $pid` in the same shell, or a container's `docker inspect -f '{{.State.Running}}'`. If `pgrep` is unavoidable, anchor the pattern to the real binary (`pgrep -x`) and check what it matches first.
+- **Similar Situations**: `pkill -f` killing its own ssh session, Monitor/until loops in agent sessions, cron "is it already running" guards, and systemd `ExecStartPre` checks.
+
+### LL-0241 — Keyword graders marked correct model answers as wrong, and the false verdict reached the user as a finding
+
+- **Root Cause**: In the 2026-11-17 local-model scenario run, graders that match words scored right answers as failures: "no mention of a home medication list" failed a missing-documentation check that wanted "not documented"; a FITREP draft recommending "HM1" (the only correct rank) failed as an "invented number"; a power bill typed "Invoice" failed because the grader wanted "Utility". Before reading the answers, Claude told Jan "the AI can't spot missing chart items", which was wrong, and had to correct it later.
+- **Why It Happened**: A grader is code with its own blind spots. Its pass/fail looks as authoritative as the model output, so it gets reported without anyone opening the transcript behind it.
+- **Solution**: Read every failed answer before writing it up. Separated real misses (interval math, a missed planted break-in, a wrong number) from grader artifacts. Widened the graders for synonyms, and reported raw and corrected scores side by side.
+- **Preventive Rule**: Treat an automated grader's FAIL as "unverified" until a human or a stronger model has read the answer. Never tell the user a model "can't do X" from a grader score alone. For counts and dates, grade parsed values; for prose, accept a list of synonyms.
+- **Similar Situations**: LLM-as-judge evals, regex-based test oracles, CI "flaky" failures, and benchmark tables copied from someone else's scoring.
+
+### LL-0242 — One overall character cap on a log digest let two noisy containers push a third of the server past the cut
+
+- **Root Cause**: The nightly n8n log triage dedups docker log lines and then truncates the whole payload at one character budget. Home Assistant (19 KB of repeats) and Radarr/Prowlarr lines carrying US-style `11/17/2026 3:02:11 AM` timestamps (the dedup only normalized ISO times, so every line was "unique") filled the budget. Containers listed after radarr (syncthing, lnc-dashboard, portainer, immich_postgres, the VPN and others) never reached the model, and a crash planted in lnc-dashboard was invisible.
+- **Why It Happened**: A global cap is fair only if every section is about the same size. Here the order is alphabetical and noise is uneven, so the cap silently favoured the first containers.
+- **Solution**: Folded every common timestamp format to `<ts>` before dedup, and gave each section its own budget (1200 chars per container, 4000 per host section) with a "(N more lines from this section cut)" note. The AI now sees all 30 containers in about 10 KB, and the planted crash is caught by every model tested.
+- **Preventive Rule**: When trimming many sources into one prompt, budget per source, not per payload, and say what was cut. Test the trimmer with a fault planted in the *last* source, not the first.
+- **Similar Situations**: RAG context packing, multi-file code review prompts, email digests, and any "top N lines" summary across many inputs.
+
+### LL-0243 — Predicted faster RAM from 3200-rated sticks, but the CPU's memory controller tops out at 2666
+
+- **Root Cause**: Claude told Jan that moving two Corsair DDR4-3200 sticks into the HP EliteDesk 800 G6 would run its memory about 20% faster. After the swap it still trained at 2667 MT/s, because the i5-10500T (Comet Lake) supports DDR4-2666 at most.
+- **Why It Happened**: The estimate used the sticks' rating and the old mixed-pair speed, not the CPU's spec. A module never runs faster than the slowest of the stick, the board and the memory controller.
+- **Solution**: Corrected the claim to Jan. The real benefits (a matched pair, a former freeze suspect removed) still applied.
+- **Preventive Rule**: Before promising a RAM speed change, check the CPU's maximum supported memory speed (Intel ARK / AMD spec page) and the board's limit. Effective speed = min(stick, board, CPU).
+- **Similar Situations**: NVMe drives in PCIe 3.0 slots, USB 3.2 drives on USB 2 ports, Wi-Fi 6 clients on Wi-Fi 5 routers, and 2.5 GbE NICs behind gigabit switches.
+
+### LL-0244 — Ollama serves one request at a time and reloads the model when a job's num_ctx differs, so a phone alert waited 2–3 minutes and timed out
+
+- **Root Cause**: A Kuma alert arriving during the 4-minute nightly log triage queued behind it on Ollama and missed n8n's 60 s timeout (it sent the raw fallback text). Log triage also asked for `num_ctx: 12288` while the server default was 8192, so switching between jobs reloaded the 22 GB model (~15 s each time), and with `KEEP_ALIVE=10m` most first requests paid a cold load too.
+- **Why It Happened**: Ollama defaults to `OLLAMA_NUM_PARALLEL=1`, treats a different context length as a different runner, and unloads idle models.
+- **Solution**: On the dedicated AI box: `OLLAMA_NUM_PARALLEL=2`, `OLLAMA_CONTEXT_LENGTH=12288` (equal to the largest job's num_ctx), `OLLAMA_KEEP_ALIVE=-1`, `OLLAMA_MAX_LOADED_MODELS=1`. Measured: alert during log triage 18.7 s (was 137–199 s), log triage 55 s (was ~4 min).
+- **Preventive Rule**: For a shared Ollama, make every client use the server's default context length (or set the default to the largest one), allow at least 2 parallel slots when a short urgent job can collide with a long one, and keep the model resident if RAM allows. Re-test the collision case after any change.
+- **Similar Situations**: llama.cpp server `--parallel`, vLLM max sequences, any single-worker queue where a chat-style request shares a backend with batch jobs.

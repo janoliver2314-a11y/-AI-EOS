@@ -709,3 +709,22 @@ table, say so in a comment beside the row, and pin the corrected value in a test
 Transcription errors are silent and the document usually carries enough internal structure
 (weekday names, ranges, totals, hours) to check itself. Keep the table pure (no framework
 imports) so the calendar, the row chip, the server-rendered email and the tests all read it.
+
+## Pattern: Second-box backup copy with a read-only pull key and daily hard-linked history
+
+**Used in**: Dell "safety box" copying the EliteDesk's restic repo (2026-11-17).
+
+**Shape**: The backup box makes its own key and *pulls*. On the source, that key is pinned in
+`authorized_keys` as `command="/usr/bin/rrsync -ro /path/to/repo/",from="<box IPs>",restrict ssh-ed25519 …`,
+so it can only read one folder (tested: list works; shell, writes and `..` are refused). Each night
+`rsync -a --delete --link-dest=<yesterday> src:/ <today>/` makes a full copy where unchanged files are hard
+links, so 14 days cost little more than one and a wiped or damaged source can't overwrite older days.
+Then open the copy with the repo password (`restic snapshots --no-lock`), run `restic check
+--read-data-subset=5%`, and alert through a channel that doesn't live on the source (ntfy.sh). Do a real
+restore of one database and check it (`PRAGMA integrity_check`).
+
+**When to use**: any second machine holding a copy of backups. Pull with a read-only key beats push:
+a compromised source can't reach the copies, and a compromised backup box can only read.
+Pair it with an outside watcher on the backup box (host, monitoring app, alert channel, DNS; alert after
+3 misses, one "back" message) and a push heartbeat from that watcher into the source's monitoring,
+so the two machines watch each other.
