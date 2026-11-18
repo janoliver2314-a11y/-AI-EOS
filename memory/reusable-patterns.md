@@ -728,3 +728,14 @@ a compromised source can't reach the copies, and a compromised backup box can on
 Pair it with an outside watcher on the backup box (host, monitoring app, alert channel, DNS; alert after
 3 misses, one "back" message) and a push heartbeat from that watcher into the source's monitoring,
 so the two machines watch each other.
+
+**Extensions (2026-11-18):**
+- *Replica fed from the copy.* A standby service on the backup box (here a second Pi-hole) can restore its
+  settings each morning from the newest copy (`restic restore latest --include <file>`): no API password or
+  new access between the boxes, edits stay on the primary, restart only when a file changed, and finish with
+  a functional test (one normal name resolves, one blocked name returns 0.0.0.0) that alerts on failure.
+- *Monthly restore test that really restores.* Run the source's own restore-test script against the copy
+  with env overrides (repository, label for push titles, 100% re-read since the copy is small) and load the
+  database dump into a throwaway container of the exact pinned image (`--network none`, removed after).
+  `gzip -t` only proves the file is intact. Check row counts (photos, users) and keep last month's count: a
+  drop of more than 10% fails. Add a 35-day "no pass" dead-man to the nightly copy job.

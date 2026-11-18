@@ -7387,3 +7387,19 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
 - **Solution**: On the dedicated AI box: `OLLAMA_NUM_PARALLEL=2`, `OLLAMA_CONTEXT_LENGTH=12288` (equal to the largest job's num_ctx), `OLLAMA_KEEP_ALIVE=-1`, `OLLAMA_MAX_LOADED_MODELS=1`. Measured: alert during log triage 18.7 s (was 137–199 s), log triage 55 s (was ~4 min).
 - **Preventive Rule**: For a shared Ollama, make every client use the server's default context length (or set the default to the largest one), allow at least 2 parallel slots when a short urgent job can collide with a long one, and keep the model resident if RAM allows. Re-test the collision case after any change.
 - **Similar Situations**: llama.cpp server `--parallel`, vLLM max sequences, any single-worker queue where a chat-style request shares a backend with batch jobs.
+
+### LL-0245 — A new Pi-hole looked broken for the router's login name, but the Orbi was rewriting that DNS answer in transit
+
+- **Root Cause**: Testing a second Pi-hole from another LAN host, `orbilogin.com` came back as a malformed reply (`Message has 16 extra bytes at end`, an OPT record in the answer section). The same query on the Pi-hole's own box was fine, and so was the old Pi-hole when queried from itself. The NETGEAR Orbi intercepts DNS for its own login names (`orbilogin.*`, `routerlogin.*`) on traffic that crosses it, even between two LAN devices, and answers badly.
+- **Why It Happened**: The obvious comparison (new box from outside vs old box from itself) used two different paths. Only the cross-host UDP path goes through the router's interception.
+- **Solution**: Queried both Pi-holes from the *other* host: both garbled the same name the same way; TCP and `+noedns` were clean, and normal names were clean over UDP. Left it alone (it was already noted in October for `dig @192.168.1.1`).
+- **Preventive Rule**: Test a DNS replica with neutral names (example.com plus one known-blocked domain). When one name fails only between hosts, query the old server over the same path and try `+tcp` / `+noedns` before blaming the new server. Compare like with like.
+- **Similar Situations**: ISP routers hijacking port 53, captive-portal names, `fritz.box`, router "parental control" DNS, Wi-Fi mesh units answering for their own setup domains.
+
+### LL-0246 — A cleanup trap could not remove a test container, because its name was set inside a `$(…)` subshell
+
+- **Root Cause**: A restore test started a throwaway Postgres inside a function called as `out="$(immich_load …)"` and set `PG=<container name>` there for the EXIT trap to remove. Command substitution runs in a subshell, so the parent never saw `PG`; the trap would have left a container running after every failed run. Same session, the new code also used `docker logs … | grep -q …` under `pipefail`, the SIGPIPE pattern from the 2026-10-18 backup failure; the suite's lint test caught it before deployment.
+- **Why It Happened**: Wanted the function's printed line *and* its side effects; `$(…)` only returns the printed line.
+- **Solution**: The caller sets `PG` before calling, and the function only uses it; the result count is parsed from the printed line. Replaced `| grep -q` with `| grep … >/dev/null`.
+- **Preventive Rule**: Anything a trap or a later step must know (container names, temp paths, PIDs) is set in the parent shell, never inside a function run by `$(…)` or in a pipeline stage. Keep a lint test for known shell traps and run the whole suite, not just the new test file.
+- **Similar Situations**: `while read` loops fed by a pipe (variables lost after the loop), `( … )` groups, `cmd | while …; do count=…; done`, background `&` jobs setting globals.
