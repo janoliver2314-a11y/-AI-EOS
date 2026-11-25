@@ -7459,3 +7459,27 @@ the Mac (symptom there: `install: unknown group root`, since macOS uses
 - **Solution**: Re-ran as `ssh -t elitedesk '~/.config/ha/save-token.sh'`. The token saved, and a test against the real tailnet URL returned 200. Fixed the script to use 127.0.0.1:8127 and stored the base URL next to the token so later calls read it instead of guessing.
 - **Preventive Rule**: Single-quote any remote path or command passed to `ssh` (`ssh host '~/x.sh'`, or use `$HOME` inside single quotes). Before probing a service, read its real bind address from config, `docker port`, or `tailscale serve status`, never the vendor default. A readiness check must prove it reached the intended service (e.g. a product-specific endpoint like HA's `/manifest.json`), not just get any 200.
 - **Similar Situations**: `scp`/`rsync` remote paths, `$VAR` expanding locally in double-quoted ssh commands, health checks that pass because a different service or a reverse proxy's default page answers on that port, Docker port remaps that differ from documentation.
+
+### LL-0254 — Immich's "duplicates" were burst shots, not identical files; the storage-template job skipped itself right after it was enabled
+
+- **Root Cause**: Cleaning up a 13.8k-asset Immich library, the Duplicates page listed 151 groups (329 assets). Every group turned out to be 2–3 consecutive camera shots (sequential `IMG_` numbers, 0–5 s apart, different file sizes). Immich flags duplicates by visual similarity (CLIP embedding distance), not by checksum; byte-identical uploads are already rejected at upload. Separately, the storage-template migration job, started seconds after `PUT /api/system-config` enabled the template, logged `Storage template migration disabled, skipping` and moved nothing.
+- **Why It Happened**: "Duplicate" in Immich means "looks alike". The microservices worker read the old config value for the first run.
+- **Solution**: Classified groups by time span before acting. Instead of trashing, created one stack per group (`POST /api/stacks`, Immich's suggested keeper first) plus a review album of the covers, so the user decides what to delete. Restarted the migration job; 19,256 of 19,302 files moved (46 hidden Live Photo `.MOV` halves stayed in `upload/`, harmless).
+- **Preventive Rule**: Never auto-delete Immich "duplicates". Check capture-time spread and file numbers first; stack or hand them to the user. After changing Immich system config by API, check the next job's log line before trusting it ran, and re-run it if it says "disabled".
+- **Similar Situations**: Google Photos / Synology Photos / PhotoPrism near-duplicate finders, any perceptual-hash dedupe tool, config-then-job sequences in apps with a separate worker process.
+
+### LL-0255 — Switching Immich to date folders would have re-copied 148 GB to a mirror; replaying the path map moved the mirror locally instead
+
+- **Root Cause**: A daily `rsync` mirror (no `--delete`) copied Immich's `upload/<user-id>/` to a laptop. Turning on the storage template renames every original to `library/<label>/<yyyy>/<yyyy-mm-dd>/<file>`. rsync matches by path, not content, so the next run would have downloaded all 148 GB again and left the old copy as a stale duplicate.
+- **Why It Happened**: Server-side renames are invisible to a path-based sync.
+- **Solution**: Exported `id|originalPath` from Postgres before and after the migration, joined them into an old→new map, and replayed it on the mirror with `os.rename` (19,256 moved, 0 missing). Then pointed the mirror script at both `upload/<id>` (new uploads land there first) and `library/<label>`. The next sync finished in 10 s with matching counts.
+- **Preventive Rule**: Before any bulk rename or reorganize on a mirrored or backed-up tree, snapshot the old paths, and after it, replay the moves on every copy instead of re-syncing. Update the sync source paths in the same step.
+- **Similar Situations**: Lightroom/Photos library reorganizations, Nextcloud folder moves with a local rsync copy, NAS share renames feeding Hyper Backup or rclone, Jellyfin/*arr renames mirrored elsewhere.
+
+### LL-0256 — A Tailscale grant change failed to save because the policy's own `tests` block still expected the port to be denied
+
+- **Root Cause**: Adding `tcp:2283` to a household member's grant in the tailnet policy, the save was rejected with `test(s) failed … address "homeserver:2283": want: Drop, got: Accept`. Earlier sessions had written a `tests` section listing every port that member must be denied, including that one.
+- **Why It Happened**: Tailscale policy tests run on every save and guard exactly this kind of change; the grant and its test have to move together.
+- **Solution**: Moved `homeserver:2283` from the member's `deny` test list to `accept` and saved again; reloaded the policy to confirm both edits persisted. (A first save attempt silently didn't persist because the page was navigated away before the save finished — always reload and re-read after saving.)
+- **Preventive Rule**: When changing tailnet access, edit `grants` and `tests` together, and keep adding a test for every new allow or deny. After saving in the web editor, reload and read the policy back before reporting done.
+- **Similar Situations**: OPA/Rego policy tests, firewall rule unit tests, Cloudflare Access / Zero Trust policies with test cases, any config with CI assertions on access.
